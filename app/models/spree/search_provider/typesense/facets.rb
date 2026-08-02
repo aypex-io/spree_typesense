@@ -17,7 +17,7 @@ module Spree
           facets = []
           facets << price_facet(distribution['price'], currency) if distribution['price'].present?
           facets << availability_facet(distribution['in_stock']) if distribution['in_stock'].present?
-          facets.compact
+          facets
         end
 
         def price_facet(distribution, currency)

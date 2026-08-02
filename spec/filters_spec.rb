@@ -19,15 +19,16 @@ RSpec.describe Spree::SearchProvider::Typesense, '#filters' do
     allow(provider).to receive(:currency).and_return('USD')
     provider.index_batch([
       doc('prod_1', price: 10.0, in_stock: true),
-      doc('prod_2', price: 50.0, in_stock: false)
+      doc('prod_2', price: 50.0, in_stock: false),
+      doc('prod_3', price: 30.0, in_stock: true)
     ])
   end
 
-  subject(:result) { provider.filters(scope: FakeScope.new(%w[prod_1 prod_2])) }
+  subject(:result) { provider.filters(scope: FakeScope.new(%w[prod_1 prod_2 prod_3])) }
 
   it 'returns a FiltersResult with the total count' do
     expect(result).to be_a(Spree::SearchProvider::FiltersResult)
-    expect(result.total_count).to eq(2)
+    expect(result.total_count).to eq(3)
   end
 
   # REGRESSION: the draft returned bare strings.
@@ -49,11 +50,13 @@ RSpec.describe Spree::SearchProvider::Typesense, '#filters' do
     expect(price[:max]).to eq(50.0)
   end
 
+  # Counts are deliberately unequal (2 in-stock, 1 out-of-stock) so a swapped
+  # id<->count pairing in the implementation cannot pass this spec silently.
   it 'builds an availability facet counting both states' do
     avail = result.filters.find { |f| f[:id] == 'availability' }
     expect(avail[:type]).to eq('availability')
     expect(avail[:options]).to contain_exactly(
-      { id: 'in_stock', count: 1 }, { id: 'out_of_stock', count: 1 }
+      { id: 'in_stock', count: 2 }, { id: 'out_of_stock', count: 1 }
     )
   end
 
