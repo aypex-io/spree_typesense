@@ -34,7 +34,7 @@ RSpec.describe Spree::SearchProvider::Typesense, '#filters' do
   # REGRESSION: the draft returned bare strings.
   it 'returns sort_options as an array of {id:} hashes' do
     expect(result.sort_options).to eq(
-      %w[price -price name -name -available_on available_on best_selling].map { |id| { id: id } }
+      %w[price -price name -name -available_on available_on best_selling].map { |id| { id: id, label: nil } }
     )
   end
 

@@ -2,6 +2,18 @@ module Spree
   module SearchProvider
     class Typesense < Base
       AVAILABLE_SORT_OPTIONS = %w[price -price name -name -available_on available_on best_selling].freeze
+
+      # Spree 5.6's Spree::Api::V3::ProductFilterSortOptionSerializer declares
+      # `attributes :id, :label` and raises KeyError when :label is absent.
+      # Spree 5.5 only read :id, so the extra key is harmless there — this one
+      # shape satisfies both, which the gemspec range (>= 5.5, < 6.0) requires.
+      #
+      # NOTE: 5.6 also appends metafield-driven sort options
+      # (`metafield_schema.sort_options`). We do not yet surface those, so a
+      # store using metafield sorts will not see them under this provider.
+      def sort_options_payload
+        AVAILABLE_SORT_OPTIONS.map { |id| { id: id, label: nil } }
+      end
       DEFAULT_SORT = 'manual'.freeze
 
       # Typesense defaults to 10 facet values per field and truncates silently.
@@ -104,7 +116,7 @@ module Spree
 
         FiltersResult.new(
           filters: Facets.build(distribution, currency: currency, stats: stats),
-          sort_options: AVAILABLE_SORT_OPTIONS.map { |id| { id: id } },
+          sort_options: sort_options_payload,
           default_sort: DEFAULT_SORT,
           total_count: result['found'] || 0
         )
@@ -374,7 +386,7 @@ module Spree
       def empty_filters_result
         FiltersResult.new(
           filters: [],
-          sort_options: AVAILABLE_SORT_OPTIONS.map { |id| { id: id } },
+          sort_options: sort_options_payload,
           default_sort: DEFAULT_SORT,
           total_count: 0
         )
