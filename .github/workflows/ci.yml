@@ -6,14 +6,20 @@ jobs:
     runs-on: ubuntu-latest
     services:
       typesense:
+        # Pinned to a full MAJOR.MINOR.PATCH — never a floating tag.
         image: typesense/typesense:30.2
         ports: ['8108:8108']
+        # Typesense refuses to start if its data dir does not already exist, and
+        # a `services:` container has no way to mkdir beforehand. Bind-mounting
+        # a host path makes Docker create it for us.
+        volumes:
+          - /tmp/typesense-ci-data:/data
         env:
           TYPESENSE_API_KEY: test-key
-          TYPESENSE_DATA_DIR: /tmp/typesense-data
+          TYPESENSE_DATA_DIR: /data
         options: >-
           --health-cmd "curl -f http://localhost:8108/health || exit 1"
-          --health-interval 5s --health-retries 10
+          --health-interval 5s --health-retries 10 --health-start-period 5s
     env:
       TYPESENSE_URL: http://localhost:8108
       TYPESENSE_API_KEY: test-key
