@@ -6,25 +6,45 @@ jobs:
     runs-on: ubuntu-latest
     services:
       typesense:
-        # Pinned to a full MAJOR.MINOR.PATCH — never a floating tag.
+        # Pinned to a full MAJOR.MINOR.PATCH — never a floating tag. A floating
+        # minor tag is what broke the Meilisearch deployment this gem replaces.
         image: typesense/typesense:30.2
         ports: ['8108:8108']
         # Typesense refuses to start if its data dir does not already exist, and
-        # a `services:` container has no way to mkdir beforehand. Bind-mounting
-        # a host path makes Docker create it for us.
+        # a `services:` container cannot mkdir beforehand. Bind-mounting a host
+        # path makes Docker create it.
         volumes:
           - /tmp/typesense-ci-data:/data
         env:
           TYPESENSE_API_KEY: test-key
           TYPESENSE_DATA_DIR: /data
-        options: >-
-          --health-cmd "curl -f http://localhost:8108/health || exit 1"
-          --health-interval 5s --health-retries 10 --health-start-period 5s
+        # NOTE: deliberately no --health-cmd. A service healthcheck runs INSIDE
+        # the container, and the Typesense image ships no curl/wget, so any such
+        # probe fails forever and the job dies at container init. We wait from
+        # the runner instead, which has curl.
     env:
       TYPESENSE_URL: http://localhost:8108
       TYPESENSE_API_KEY: test-key
     steps:
       - uses: actions/checkout@v4
+
       - uses: ruby/setup-ruby@v1
-        with: { bundler-cache: true }
-      - run: bundle exec rspec
+        with:
+          bundler-cache: true
+
+      - name: Wait for Typesense
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS "$TYPESENSE_URL/health" >/dev/null 2>&1; then
+              echo "Typesense ready after ${i}s"
+              curl -sS "$TYPESENSE_URL/health"; echo
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Typesense did not become ready in 30s" >&2
+          docker ps -a >&2
+          exit 1
+
+      - name: Run specs
+        run: bundle exec rspec
