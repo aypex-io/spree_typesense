@@ -103,7 +103,7 @@ module Spree
         client.collections[collection_name].documents.search(
           search_params(query: query, conditions: conditions, sort: sort, page: page, limit: limit, facet_by: facet_by)
         )
-      rescue ::Typesense::Error::Error, Faraday::Error => e
+      rescue ::Typesense::Error, Faraday::Error => e
         report_search_failure(e, query)
         nil
       end
@@ -166,7 +166,7 @@ module Spree
         end
 
         results
-      rescue ::Typesense::Error::Error, Faraday::Error => e
+      rescue ::Typesense::Error, Faraday::Error => e
         report_search_failure(e, nil)
         nil
       end
@@ -243,6 +243,11 @@ module Spree
         params
       end
 
+      # NOTE: the rescues above name +::Typesense::Error+, the gem's base class.
+      # There is no +Typesense::Error::Error+ — naming it made the rescue clause
+      # itself raise NameError, so every API failure escaped as a 500 instead of
+      # degrading. Ruby only resolves a rescue's constant when an exception is
+      # actually raised, which is why it stayed invisible.
       def report_search_failure(error, query)
         Rails.logger.warn { "[spree_typesense] search failed: #{error.class}: #{error.message}. Run `rake spree:search:reindex`." }
         Rails.error.report(error, handled: true, context: { collection: collection_name, query: query })

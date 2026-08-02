@@ -15,10 +15,17 @@ module Spree
         # Sibling to +normalize+, kept separate so the counts shape every builder
         # reads stays a plain { value => count } hash.
         #
-        # Numeric facets carry a `stats` block alongside `counts`. Only min/max
-        # are trustworthy: they are computed over the FULL matching set (and
-        # respect filter_by), whereas sum/avg/total_values are computed over the
-        # truncated set of returned values. String facets have no stats at all.
+        # EVERY facet carries a `stats` block, but only numeric fields get
+        # min/max in it — string[] and bool facets return `{total_values: N}`
+        # and nothing else, as does a numeric field whose search matched no
+        # documents. So consumers must test for the KEY, not for the hash.
+        #
+        # Of the numeric keys only min/max are trustworthy: they are computed
+        # over the FULL matching set and respect filter_by, whereas
+        # sum/avg/total_values describe only the truncated set of returned
+        # values. Junk blocks are kept rather than filtered — the consumer
+        # guards on the key, and dropping them here would hide what the engine
+        # actually returned.
         def normalize_stats(facet_counts)
           Array(facet_counts).each_with_object({}) do |facet, acc|
             acc[facet['field_name']] = facet['stats'] if facet['stats'].present?
@@ -45,16 +52,18 @@ module Spree
         # min of 23.50. stats.min/max are exact at any cardinality and honour
         # filter_by, so they narrow correctly as the shopper filters.
         #
-        # The key fallback only fires when stats are absent (a non-numeric price
-        # field, or a subclass calling this directly); nil bounds would break
-        # storefront rendering, so an approximate range beats no range.
+        # Guard on the KEY, not on the hash: Typesense returns a stats block with
+        # only `total_values` for non-numeric facets AND for a numeric facet whose
+        # search matched nothing. Testing `stats ? ...` emitted min: nil, max: nil
+        # for those and broke the storefront's price slider. The key fallback
+        # yields an approximate range, which beats no range.
         def price_facet(distribution, stats, currency)
           amounts = distribution.keys.map(&:to_f)
           {
             id: 'price',
             type: 'price_range',
-            min: stats ? stats['min'] : amounts.min,
-            max: stats ? stats['max'] : amounts.max,
+            min: stats&.key?('min') ? stats['min'] : amounts.min,
+            max: stats&.key?('max') ? stats['max'] : amounts.max,
             currency: currency
           }
         end

@@ -131,8 +131,27 @@ class FakeScope
   end
 end
 
+# The provider's error path calls `Rails.logger.warn` and `Rails.error.report`,
+# both of which a real host app always provides but which are nil when no Rails
+# app is booted. Supply null implementations so specs exercise the REAL rescue
+# path end-to-end — making the production code nil-tolerant instead would be
+# tailoring the gem to an artefact of this suite.
+require 'logger'
+
+module Spree
+  module SearchProvider
+    NULL_ERROR_REPORTER = Object.new
+    def NULL_ERROR_REPORTER.report(*, **); end
+  end
+end
+
 RSpec.configure do |config|
   config.disable_monkey_patching!
+
+  config.before do
+    allow(Rails).to receive(:logger).and_return(Logger.new(File::NULL))
+    allow(Rails).to receive(:error).and_return(Spree::SearchProvider::NULL_ERROR_REPORTER)
+  end
 
   config.before(:suite) do
     # Fail loudly if no server — mocking a search engine tests nothing useful.

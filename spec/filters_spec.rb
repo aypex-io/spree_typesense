@@ -70,6 +70,41 @@ RSpec.describe Spree::SearchProvider::Typesense, '#filters' do
 end
 
 
+# REGRESSION: the rescue clauses named `Typesense::Error::Error`, which does not
+# exist — the gem's base class is `Typesense::Error`. Ruby resolves a rescue's
+# constant only when an exception is actually raised, so the mistake was
+# invisible until a real API error occurred, at which point the rescue ITSELF
+# raised NameError and the failure escaped as a storefront 500 instead of
+# degrading. These specs drive a genuine engine error (a collection that was
+# never created — precisely the "run reindex first" case the warning names)
+# rather than stubbing, because stubbing the method under test is what let this
+# hide in the first place.
+RSpec.describe Spree::SearchProvider::Typesense, 'when the engine really errors' do
+  let(:store)    { instance_double('Spree::Store', id: 7, code: 'nosuchcollection') }
+  let(:provider) { described_class.new(store) }
+
+  before do
+    provider.client.collections[provider.collection_name].delete rescue nil
+    allow(provider).to receive(:locale).and_return('en')
+    allow(provider).to receive(:currency).and_return('USD')
+  end
+
+  it 'degrades search_and_filter to an empty result rather than raising' do
+    result = nil
+    expect { result = provider.search_and_filter(scope: FakeScope.new([])) }.not_to raise_error
+    expect(result.total_count).to eq(0)
+    expect(result.products).to be_empty
+  end
+
+  it 'degrades filters to an empty-but-valid result rather than raising' do
+    result = nil
+    expect { result = provider.filters(scope: FakeScope.new([])) }.not_to raise_error
+    expect(result.filters).to eq([])
+    expect(result.total_count).to eq(0)
+    expect(result.default_sort).to eq('manual')
+  end
+end
+
 # Typesense caps the number of facet VALUES it returns (default 10, we raise it
 # to 100) and truncates SILENTLY, keeping the highest values. Deriving the price
 # range from those keys therefore reports a min that is simply wrong once a store
@@ -129,11 +164,28 @@ RSpec.describe Spree::SearchProvider::Typesense::Facets, '.price_facet' do
     expect(facet).to eq(id: 'price', type: 'price_range', min: 5.0, max: 90.0, currency: 'USD')
   end
 
-  # Only numeric fields get stats; a caller that somehow has none still needs a
+  # Only numeric fields get min/max; a caller that has none still needs a
   # renderable facet rather than nil bounds.
   it 'falls back to the facet keys when no stats are present' do
     facet = described_class.price_facet({ '80.0' => 1, '90.0' => 1 }, nil, 'USD')
     expect(facet).to include(min: 80.0, max: 90.0)
+  end
+
+  # REGRESSION: guarding on the stats hash being truthy rather than on the key
+  # being present emitted min: nil, max: nil and broke the storefront's price
+  # slider. Typesense really does return this shape — a stats block with only
+  # total_values — for non-numeric facets, and for `price` itself whenever the
+  # search matches nothing.
+  it 'falls back to the facet keys when stats exist but carry no min/max' do
+    facet = described_class.price_facet({ '80.0' => 1, '90.0' => 1 }, { 'total_values' => 0 }, 'USD')
+    expect(facet).to include(min: 80.0, max: 90.0)
+  end
+
+  it 'never emits nil bounds' do
+    [nil, {}, { 'total_values' => 0 }].each do |stats|
+      facet = described_class.price_facet({ '80.0' => 1 }, stats, 'USD')
+      expect([facet[:min], facet[:max]]).to all(be_a(Numeric)), "nil bound for stats=#{stats.inspect}"
+    end
   end
 end
 
@@ -142,6 +194,14 @@ RSpec.describe Spree::SearchProvider::Typesense::Facets, '.normalize_stats' do
     raw = [{ 'field_name' => 'price', 'counts' => [], 'stats' => { 'min' => 1.0, 'max' => 9.0 } },
            { 'field_name' => 'tags',  'counts' => [] }]
     expect(described_class.normalize_stats(raw)).to eq('price' => { 'min' => 1.0, 'max' => 9.0 })
+  end
+
+  # Non-numeric facets DO carry a stats block — it just has no min/max. Keep it
+  # rather than filtering: the consumer guards on the key, and dropping blocks
+  # here would hide what the engine actually returned.
+  it 'keeps the total_values-only block non-numeric facets return' do
+    raw = [{ 'field_name' => 'preorder', 'counts' => [], 'stats' => { 'total_values' => 0 } }]
+    expect(described_class.normalize_stats(raw)).to eq('preorder' => { 'total_values' => 0 })
   end
 end
 
