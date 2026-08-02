@@ -1,0 +1,24 @@
+name: CI
+on: [push, pull_request]
+
+jobs:
+  spec:
+    runs-on: ubuntu-latest
+    services:
+      typesense:
+        image: typesense/typesense:30.2
+        ports: ['8108:8108']
+        env:
+          TYPESENSE_API_KEY: test-key
+          TYPESENSE_DATA_DIR: /tmp/typesense-data
+        options: >-
+          --health-cmd "curl -f http://localhost:8108/health || exit 1"
+          --health-interval 5s --health-retries 10
+    env:
+      TYPESENSE_URL: http://localhost:8108
+      TYPESENSE_API_KEY: test-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with: { bundler-cache: true }
+      - run: bundle exec rspec
