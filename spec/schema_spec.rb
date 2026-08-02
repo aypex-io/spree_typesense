@@ -30,6 +30,10 @@ RSpec.describe Spree::SearchProvider::Typesense::Schema do
     expect(definition[:fields].map { |f| f[:name] }).not_to include('taxon_ids')
   end
 
+  # This is the spree_core 5.5.1 contract (what TKF runs) and must stay
+  # exact. It asserts every 5.5.1 field is present — it does not assert the
+  # schema declares NOTHING ELSE, since `preorder` (5.6+ forward-compat,
+  # tested separately below) is a deliberate, optional addition.
   it 'declares every field the presenter emits' do
     expected = %w[
       product_id locale currency name description slug price compare_at_price
@@ -38,12 +42,23 @@ RSpec.describe Spree::SearchProvider::Typesense::Schema do
       option_value_ids option_values tags units_sold_count
       available_on created_at updated_at
     ]
-    expect(definition[:fields].map { |f| f[:name] }).to match_array(expected)
+    expect(definition[:fields].map { |f| f[:name] }).to include(*expected)
   end
 
   it 'declares no field the presenter does not emit' do
     names = definition[:fields].map { |f| f[:name] }
     expect(names).not_to include('brand', 'best_selling_score', 'taxon_ids')
+  end
+
+  # spree_core 5.5.1 (what TKF runs, and what we develop against) does not
+  # emit `preorder` — that only appears in 5.6+. Declared separately from the
+  # "declares every field the presenter emits" contract above (which is
+  # pinned to 5.5.1) so the collection stays valid if a 5.6 document with
+  # `preorder` ever arrives, without requiring or expecting the field.
+  it 'declares preorder as an optional, facetable bool for 5.6 forward-compat' do
+    expect(field('preorder')[:type]).to eq('bool')
+    expect(field('preorder')[:optional]).to be(true)
+    expect(field('preorder')[:facet]).to be(true)
   end
 
   it 'makes every FACET_FIELD actually facetable' do

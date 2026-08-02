@@ -9,7 +9,7 @@ module Spree
         # Mirrors meilisearch.rb#facet_attributes (== filterable_attributes).
         FACET_FIELDS = %w[
           product_id status in_stock store_ids channel_ids locale currency
-          price category_ids tags option_value_ids
+          price category_ids tags option_value_ids preorder
         ].freeze
 
         SORT_FIELDS = %w[name price created_at available_on units_sold_count].freeze
@@ -59,7 +59,13 @@ module Spree
               # order, so sort: true is sound. Never retype these to int.
               { name: 'available_on', type: 'string', facet: false, optional: true, sort: true },
               { name: 'created_at',   type: 'string', facet: false, optional: true, sort: true },
-              { name: 'updated_at',   type: 'string', facet: false, optional: true, sort: true }
+              { name: 'updated_at',   type: 'string', facet: false, optional: true, sort: true },
+
+              # spree_core 5.5.1 (what TKF runs, and what this gem develops
+              # against) does NOT emit this field. spree_core 5.6+ does
+              # (product.preorder?). Declared optional so the collection
+              # stays valid whichever version's documents arrive.
+              { name: 'preorder', type: 'bool', facet: true, optional: true }
             ]
           }
         end
