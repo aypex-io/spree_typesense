@@ -17,7 +17,9 @@ RSpec.describe Spree::SearchProvider::Typesense do
     provider.index_batch([
       { 'id' => 'prod_a_en_USD', 'product_id' => 'prod_a', 'locale' => 'en',
         'currency' => 'USD', 'status' => 'active', 'name' => 'Tongkat Ali',
-        'price' => 39.0, 'created_at' => 1_700_000_000 }
+        'price' => 39.0, 'in_stock' => true, 'store_ids' => ['1'],
+        'discontinue_on' => 0, 'units_sold_count' => 0,
+        'created_at' => '2024-01-01T00:00:00Z' }
     ])
 
     doc = provider.client.collections[provider.collection_name].documents['prod_a_en_USD'].retrieve
@@ -31,7 +33,9 @@ RSpec.describe Spree::SearchProvider::Typesense do
       call: [
         { 'id' => 'prod_c_en_USD', 'product_id' => 'prod_c', 'locale' => 'en',
           'currency' => 'USD', 'status' => 'active', 'name' => 'Delegated',
-          'price' => 9.0, 'created_at' => 1_700_000_000 }
+          'price' => 9.0, 'in_stock' => true, 'store_ids' => ['1'],
+          'discontinue_on' => 0, 'units_sold_count' => 0,
+          'created_at' => '2024-01-01T00:00:00Z' }
       ]
     )
     presenter_class = class_double('Spree::SearchProvider::ProductPresenter', new: presenter)
@@ -47,7 +51,9 @@ RSpec.describe Spree::SearchProvider::Typesense do
     provider.index_batch([
       { 'id' => 'prod_b_en_USD', 'product_id' => 'prod_b', 'locale' => 'en',
         'currency' => 'USD', 'status' => 'active', 'name' => 'Gone',
-        'price' => 1.0, 'created_at' => 1_700_000_000 }
+        'price' => 1.0, 'in_stock' => true, 'store_ids' => ['1'],
+        'discontinue_on' => 0, 'units_sold_count' => 0,
+        'created_at' => '2024-01-01T00:00:00Z' }
     ])
     provider.remove_by_id('prod_b')
 
@@ -60,10 +66,14 @@ RSpec.describe Spree::SearchProvider::Typesense do
     provider.index_batch([
       { 'id' => 'prod_d_en_USD', 'product_id' => 'prod_d', 'locale' => 'en',
         'currency' => 'USD', 'status' => 'active', 'name' => 'Target',
-        'price' => 1.0, 'created_at' => 1_700_000_000 },
+        'price' => 1.0, 'in_stock' => true, 'store_ids' => ['1'],
+        'discontinue_on' => 0, 'units_sold_count' => 0,
+        'created_at' => '2024-01-01T00:00:00Z' },
       { 'id' => 'prod_e_en_USD', 'product_id' => 'prod_e', 'locale' => 'en',
         'currency' => 'USD', 'status' => 'active', 'name' => 'Bystander',
-        'price' => 1.0, 'created_at' => 1_700_000_000 }
+        'price' => 1.0, 'in_stock' => true, 'store_ids' => ['1'],
+        'discontinue_on' => 0, 'units_sold_count' => 0,
+        'created_at' => '2024-01-01T00:00:00Z' }
     ])
 
     # A naive `"product_id:=#{prefixed_id}"` interpolation turns this into
