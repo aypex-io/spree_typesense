@@ -8,7 +8,20 @@ module Spree
         # Normalise to the hash shape so the builders below read like upstream.
         def normalize(facet_counts)
           Array(facet_counts).each_with_object({}) do |facet, acc|
-            acc[facet['field_name']] = facet['counts'].to_h { |c| [c['value'], c['count']] }
+            acc[facet['field_name']] = Array(facet['counts']).to_h { |c| [c['value'], c['count']] }
+          end
+        end
+
+        # Sibling to +normalize+, kept separate so the counts shape every builder
+        # reads stays a plain { value => count } hash.
+        #
+        # Numeric facets carry a `stats` block alongside `counts`. Only min/max
+        # are trustworthy: they are computed over the FULL matching set (and
+        # respect filter_by), whereas sum/avg/total_values are computed over the
+        # truncated set of returned values. String facets have no stats at all.
+        def normalize_stats(facet_counts)
+          Array(facet_counts).each_with_object({}) do |facet, acc|
+            acc[facet['field_name']] = facet['stats'] if facet['stats'].present?
           end
         end
 
@@ -16,18 +29,34 @@ module Spree
         # mirrors meilisearch.rb#build_facet_response. No `.compact`: every
         # builder below returns a hash or is skipped by its guard, so a nil can
         # never reach the array. Re-add it if that stops being true.
-        def build(distribution, currency:)
+        def build(distribution, currency:, stats: {})
           facets = []
-          facets << price_facet(distribution['price'], currency) if distribution['price'].present?
+          facets << price_facet(distribution['price'], stats['price'], currency) if distribution['price'].present?
           facets << availability_facet(distribution['in_stock']) if distribution['in_stock'].present?
           facets.concat(option_facets(distribution['option_value_ids'])) if distribution['option_value_ids'].present?
           facets << category_facet(distribution['category_ids']) if distribution['category_ids'].present?
           facets
         end
 
-        def price_facet(distribution, currency)
+        # Range comes from `stats`, NOT from the facet keys. Typesense truncates
+        # the returned values (keeping the highest) once a search matches more
+        # distinct prices than the facet cap, so a key-derived min is silently
+        # wrong on any decent-sized catalogue — 120 prices from 3.50 reported a
+        # min of 23.50. stats.min/max are exact at any cardinality and honour
+        # filter_by, so they narrow correctly as the shopper filters.
+        #
+        # The key fallback only fires when stats are absent (a non-numeric price
+        # field, or a subclass calling this directly); nil bounds would break
+        # storefront rendering, so an approximate range beats no range.
+        def price_facet(distribution, stats, currency)
           amounts = distribution.keys.map(&:to_f)
-          { id: 'price', type: 'price_range', min: amounts.min, max: amounts.max, currency: currency }
+          {
+            id: 'price',
+            type: 'price_range',
+            min: stats ? stats['min'] : amounts.min,
+            max: stats ? stats['max'] : amounts.max,
+            currency: currency
+          }
         end
 
         def availability_facet(distribution)

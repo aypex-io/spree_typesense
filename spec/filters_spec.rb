@@ -69,6 +69,82 @@ RSpec.describe Spree::SearchProvider::Typesense, '#filters' do
   end
 end
 
+
+# Typesense caps the number of facet VALUES it returns (default 10, we raise it
+# to 100) and truncates SILENTLY, keeping the highest values. Deriving the price
+# range from those keys therefore reports a min that is simply wrong once a store
+# has more distinct prices than the cap. Typesense computes `stats.min`/`stats.max`
+# over the full matching set, so the range must come from stats instead.
+RSpec.describe Spree::SearchProvider::Typesense, '#filters price range beyond the facet cap' do
+  let(:store)    { instance_double('Spree::Store', id: 7, code: 'tkfcap') }
+  let(:provider) { described_class.new(store) }
+
+  # 120 distinct prices, 3.5 .. 122.5 — more than the 100-value cap.
+  let(:prices)    { (0...120).map { |i| i + 3.5 } }
+  let(:lowest)    { 3.5 }
+  let(:highest)   { 122.5 }
+
+  before do
+    provider.client.collections[provider.collection_name].delete rescue nil
+    provider.ensure_index_settings!
+    allow(provider).to receive(:locale).and_return('en')
+    allow(provider).to receive(:currency).and_return('USD')
+    provider.index_batch(prices.each_with_index.map do |price, i|
+      { 'id' => "prod_#{i}_en_USD", 'product_id' => "prod_#{i}", 'locale' => 'en', 'currency' => 'USD',
+        'name' => "Product #{i}", 'status' => 'active', 'in_stock' => true, 'store_ids' => ['7'],
+        'discontinue_on' => 0, 'units_sold_count' => 0, 'price' => price,
+        'available_on' => '2020-01-01T00:00:00Z', 'created_at' => '2020-01-01T00:00:00Z' }
+    end)
+  end
+
+  subject(:price_facet) do
+    provider.filters(scope: FakeScope.new([])).filters.find { |f| f[:id] == 'price' }
+  end
+
+  # The truncation keeps the HIGH values, so max survives a key-derived
+  # implementation and only min exposes the bug — assert both anyway.
+  it 'reports the true lowest price, not the lowest surviving facet key' do
+    expect(price_facet[:min]).to eq(lowest)
+  end
+
+  it 'reports the true highest price' do
+    expect(price_facet[:max]).to eq(highest)
+  end
+
+  # stats are computed over the FILTERED set, so a narrowed search must narrow
+  # the reported range too — a hardcoded global min/max would pass the above.
+  it 'reports the range of the filtered set, not of the whole collection' do
+    facet = provider.filters(scope: FakeScope.new([]), filters: { 'price_gte' => 50.0 })
+                    .filters.find { |f| f[:id] == 'price' }
+    expect(facet[:min]).to eq(50.5)
+    expect(facet[:max]).to eq(highest)
+  end
+end
+
+RSpec.describe Spree::SearchProvider::Typesense::Facets, '.price_facet' do
+  # Guards the precedence directly: if an implementation ever falls back to keys
+  # while stats are available, these disagree and the spec catches it.
+  it 'prefers stats over the (truncatable) facet keys' do
+    facet = described_class.price_facet({ '80.0' => 1, '90.0' => 1 }, { 'min' => 5.0, 'max' => 90.0 }, 'USD')
+    expect(facet).to eq(id: 'price', type: 'price_range', min: 5.0, max: 90.0, currency: 'USD')
+  end
+
+  # Only numeric fields get stats; a caller that somehow has none still needs a
+  # renderable facet rather than nil bounds.
+  it 'falls back to the facet keys when no stats are present' do
+    facet = described_class.price_facet({ '80.0' => 1, '90.0' => 1 }, nil, 'USD')
+    expect(facet).to include(min: 80.0, max: 90.0)
+  end
+end
+
+RSpec.describe Spree::SearchProvider::Typesense::Facets, '.normalize_stats' do
+  it 'extracts per-field stats and ignores fields that have none' do
+    raw = [{ 'field_name' => 'price', 'counts' => [], 'stats' => { 'min' => 1.0, 'max' => 9.0 } },
+           { 'field_name' => 'tags',  'counts' => [] }]
+    expect(described_class.normalize_stats(raw)).to eq('price' => { 'min' => 1.0, 'max' => 9.0 })
+  end
+end
+
 RSpec.describe Spree::SearchProvider::Typesense::Facets, '.option_facets' do
   let(:colour) { FakeOptionType.new(prefixed_id: 'optt_colour', name: 'Colour', label: 'Colour', kind: 'color') }
   let(:size)   { FakeOptionType.new(prefixed_id: 'optt_size', name: 'Size', label: 'Size', kind: 'text') }

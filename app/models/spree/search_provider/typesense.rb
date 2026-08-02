@@ -5,6 +5,7 @@ module Spree
       DEFAULT_SORT = 'manual'.freeze
 
       # Typesense defaults to 10 facet values per field and truncates silently.
+      # Needed by option/category facets; the price range reads stats instead.
       MAX_FACET_VALUES = 100
 
       def self.indexing_required?
@@ -57,11 +58,11 @@ module Spree
       end
 
       def filters(scope:, query: nil, filters: {})
-        result, distribution = execute_faceted_search(query: query, filters: filters)
+        result, distribution, stats = execute_faceted_search(query: query, filters: filters)
         return empty_filters_result unless result
 
         FiltersResult.new(
-          filters: Facets.build(distribution, currency: currency),
+          filters: Facets.build(distribution, currency: currency, stats: stats),
           sort_options: AVAILABLE_SORT_OPTIONS.map { |id| { id: id } },
           default_sort: DEFAULT_SORT,
           total_count: result['found'] || 0
@@ -107,7 +108,9 @@ module Spree
         nil
       end
 
-      # Faceted read path. Returns [main_result, distribution], or nil.
+      # Faceted read path. Returns [main_result, distribution, stats], or nil.
+      # `stats` always comes from the MAIN query — it covers numeric fields
+      # (price), which disjunctive relaxation never touches.
       #
       # DISJUNCTIVE FACETING: with option values selected, the counts for each
       # selected option type must be computed with THAT type's own filter
@@ -124,7 +127,7 @@ module Spree
           result = execute_search(query: query, filters: filters, sort: nil, page: 1, limit: 0, facet_by: facet_by)
           return nil unless result
 
-          return [result, Facets.normalize(result['facet_counts'])]
+          return [result, Facets.normalize(result['facet_counts']), Facets.normalize_stats(result['facet_counts'])]
         end
 
         option_type_ids = grouped.keys
@@ -141,7 +144,9 @@ module Spree
         results = execute_multi_search(searches)
         return nil unless results
 
-        [results.first, merge_disjunctive_facets(results.first, results.drop(1), option_type_ids)]
+        [results.first,
+         merge_disjunctive_facets(results.first, results.drop(1), option_type_ids),
+         Facets.normalize_stats(results.first['facet_counts'])]
       end
 
       # Typesense answers multi_search with HTTP 200 even when an individual
@@ -227,8 +232,12 @@ module Spree
         if facet_by
           params[:facet_by] = facet_by
           # Typesense caps facet values at 10 per field by default and truncates
-          # SILENTLY — a shop with more than 10 colours would just lose the tail.
-          # Meilisearch's equivalent default is 100; match it.
+          # SILENTLY. The price range no longer depends on this (it reads
+          # stats.min/max, which are exact at any cardinality), but option and
+          # category facets DO — their counts only exist as returned values, and
+          # string facets get no stats block. Meilisearch's equivalent default is
+          # 100; match it. Residual risk: an option type with >100 values still
+          # loses its tail. See the Task 6b report.
           params[:max_facet_values] = MAX_FACET_VALUES
         end
         params
