@@ -4,6 +4,14 @@ on: [push, pull_request]
 jobs:
   spec:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The gemspec claims spree_core >= 5.5, < 6.0 — test both ends of it.
+        # 5.5.1 is what the consuming application runs; 5.6.x emits an extra
+        # `preorder` field, which is why the schema declares it optional.
+        spree_core: ['5.5.1', '5.6.1']
+    name: spec (spree_core ${{ matrix.spree_core }})
     services:
       typesense:
         # Pinned to a full MAJOR.MINOR.PATCH — never a floating tag. A floating
@@ -25,12 +33,18 @@ jobs:
     env:
       TYPESENSE_URL: http://localhost:8108
       TYPESENSE_API_KEY: test-key
+      SPREE_CORE_VERSION: ${{ matrix.spree_core }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: ruby/setup-ruby@v1
         with:
           bundler-cache: true
+          # No Gemfile.lock is committed, so the bundler cache key derives from
+          # the Gemfile/gemspec — identical across matrix legs. Without this,
+          # the 5.6.1 leg would restore the 5.5.1 leg's gems and silently test
+          # the same version twice, making the matrix decorative.
+          cache-version: spree-core-${{ matrix.spree_core }}
 
       - name: Wait for Typesense
         run: |
