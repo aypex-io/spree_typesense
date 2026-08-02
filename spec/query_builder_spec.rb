@@ -24,17 +24,36 @@ RSpec.describe Spree::SearchProvider::Typesense::QueryBuilder do
       expect(conds).to include('status:=active')
     end
 
-    it 'excludes future-dated and discontinued products' do
-      expect(conds.join(' ')).to include('available_on')
-      expect(conds.join(' ')).to include('discontinue_on')
+    it 'excludes future-dated products' do
+      expect(conds.join(' ')).to include('available_on:<=2026-08-02')
+    end
+
+    # 0 is the sentinel for "never discontinued"; a future discontinue_on
+    # means the product is discontinued LATER and must still be visible now.
+    # This must fail against a bare `discontinue_on:=0` filter.
+    it 'keeps products whose discontinue date is in the future' do
+      clause = conds.find { |c| c.include?('discontinue_on') }
+      expect(clause).to include('discontinue_on:=0')
+      expect(clause).to include('||')
+      expect(clause).to match(/discontinue_on:>\d+/)
     end
 
     it 'strips hostile characters out of locale and currency' do
       out = described_class.system_conditions(
         store: store, locale: "en' || x:='y", currency: 'US D||', now: Time.utc(2026, 1, 1)
       )
-      expect(out.join(' ')).not_to include("'")
-      expect(out.join(' ')).not_to include('||')
+      # discontinue_on legitimately contains '||', so check the locale/
+      # currency clauses specifically rather than the whole joined string.
+      locale_and_currency = out.select { |c| c.start_with?('locale:', 'currency:') }.join(' ')
+      expect(locale_and_currency).not_to include("'")
+      expect(locale_and_currency).not_to include('||')
+    end
+
+    it 'upcases lowercase currency codes rather than dropping them' do
+      out = described_class.system_conditions(
+        store: store, locale: 'en', currency: 'usd', now: Time.utc(2026, 1, 1)
+      )
+      expect(out).to include('currency:=USD')
     end
   end
 
@@ -67,6 +86,12 @@ RSpec.describe Spree::SearchProvider::Typesense::QueryBuilder do
 
     it 'ignores with_option_value_ids (handled by grouped conditions)' do
       expect(described_class.user_conditions(with_option_value_ids: %w[ov_a])).to be_empty
+    end
+
+    it 'does not raise when a price param arrives as an Array' do
+      expect { described_class.user_conditions(price_gte: ['1']) }.not_to raise_error
+      out = described_class.user_conditions(price_gte: ['1'])
+      expect(out.first).to eq('price:>=1.0')
     end
   end
 

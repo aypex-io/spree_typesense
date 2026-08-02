@@ -23,10 +23,14 @@ module Spree
           conditions = ["store_ids:=#{store.id.to_i}"]
           conditions << "status:=active"
           conditions << "locale:=#{locale.to_s.gsub(/[^a-zA-Z_-]/, '')}"
-          conditions << "currency:=#{currency.to_s.gsub(/[^A-Z]/, '')}"
+          conditions << "currency:=#{currency.to_s.upcase.gsub(/[^A-Z]/, '')}"
           # ISO8601 sorts lexicographically, so a string compare is sound.
           conditions << "available_on:<=#{now.iso8601}"
-          conditions << "discontinue_on:=0"
+          # 0 is the sentinel for "never discontinued"; a future timestamp
+          # means discontinued LATER, so those products must still be
+          # visible now. Mirrors meilisearch.rb's
+          # "(discontinue_on = 0 OR discontinue_on > now)".
+          conditions << "(discontinue_on:=0 || discontinue_on:>#{now.to_i})"
           conditions
         end
 
@@ -42,8 +46,8 @@ module Spree
 
         def condition_for(key, value)
           case key
-          when 'price_gte' then "price:>=#{value.to_f}"
-          when 'price_lte' then "price:<=#{value.to_f}"
+          when 'price_gte' then "price:>=#{Array(value).first.to_f}"
+          when 'price_lte' then "price:<=#{Array(value).first.to_f}"
           when 'in_stock'  then ('in_stock:=true'  if value.to_s != '0')
           when 'out_of_stock' then ('in_stock:=false' if value.to_s != '0')
           when 'in_category'
