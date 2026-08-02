@@ -55,4 +55,22 @@ RSpec.describe Spree::SearchProvider::Typesense do
       provider.client.collections[provider.collection_name].documents['prod_b_en_USD'].retrieve
     }.to raise_error(Typesense::Error::ObjectNotFound)
   end
+
+  it 'sanitizes prefixed_id so it cannot inject extra filter clauses' do
+    provider.index_batch([
+      { 'id' => 'prod_d_en_USD', 'product_id' => 'prod_d', 'locale' => 'en',
+        'currency' => 'USD', 'status' => 'active', 'name' => 'Target',
+        'price' => 1.0, 'created_at' => 1_700_000_000 },
+      { 'id' => 'prod_e_en_USD', 'product_id' => 'prod_e', 'locale' => 'en',
+        'currency' => 'USD', 'status' => 'active', 'name' => 'Bystander',
+        'price' => 1.0, 'created_at' => 1_700_000_000 }
+    ])
+
+    # A naive `"product_id:=#{prefixed_id}"` interpolation turns this into
+    # `product_id:=prod_d || product_id:=prod_e`, deleting the bystander too.
+    provider.remove_by_id('prod_d || product_id:=prod_e')
+
+    doc = provider.client.collections[provider.collection_name].documents['prod_e_en_USD'].retrieve
+    expect(doc['product_id']).to eq('prod_e')
+  end
 end

@@ -33,7 +33,7 @@ module Spree
       def remove_by_id(prefixed_id)
         client.collections[collection_name]
               .documents
-              .delete(filter_by: "product_id:=#{prefixed_id}")
+              .delete(filter_by: "product_id:=#{sanitize_prefixed_id(prefixed_id)}")
       rescue ::Typesense::Error::ObjectNotFound
         nil
       end
@@ -58,6 +58,14 @@ module Spree
       def presenter_class
         # Configurable dependency, exactly as the Meilisearch provider resolves it.
         Spree::Dependencies.search_product_presenter_class
+      end
+
+      # `remove_by_id` is public and reached via Spree's RemoveJob (ActiveJob
+      # serialisation, not a guaranteed well-formed id), so strip anything
+      # that isn't part of a legitimate prefixed id before it lands in a
+      # Typesense filter expression — mirrors the Meilisearch provider's guard.
+      def sanitize_prefixed_id(value)
+        value.to_s.gsub(/[^a-zA-Z0-9_]/, '')
       end
     end
   end
