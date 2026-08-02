@@ -83,4 +83,31 @@ RSpec.describe Spree::SearchProvider::Typesense do
     doc = provider.client.collections[provider.collection_name].documents['prod_e_en_USD'].retrieve
     expect(doc['product_id']).to eq('prod_e')
   end
+
+  describe '#derive_fields (private)' do
+    # Typesense silently returns zero results for range filters on string
+    # fields, so system_conditions filters on this derived int64 instead of
+    # the presenter's ISO8601 `available_on` string.
+    it 'derives available_on_i as 0 when available_on is missing' do
+      doc = provider.send(:derive_fields, { 'product_id' => 'prod_x' })
+      expect(doc['available_on_i']).to eq(0)
+    end
+
+    it 'derives available_on_i as 0 when available_on is nil' do
+      doc = provider.send(:derive_fields, { 'product_id' => 'prod_x', 'available_on' => nil })
+      expect(doc['available_on_i']).to eq(0)
+    end
+
+    it 'derives available_on_i as the epoch of available_on when present' do
+      doc = provider.send(:derive_fields, { 'product_id' => 'prod_x', 'available_on' => '2020-01-01T00:00:00Z' })
+      expect(doc['available_on_i']).to eq(Time.parse('2020-01-01T00:00:00Z').to_i)
+    end
+
+    # The presenter (spree_core) emits symbol-keyed documents; this gem's own
+    # specs use string keys. derive_fields must handle both.
+    it 'handles symbol-keyed documents as emitted by the real presenter' do
+      doc = provider.send(:derive_fields, { product_id: 'prod_x', available_on: '2020-01-01T00:00:00Z' })
+      expect(doc['available_on_i']).to eq(Time.parse('2020-01-01T00:00:00Z').to_i)
+    end
+  end
 end

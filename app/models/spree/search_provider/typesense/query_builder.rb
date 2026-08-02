@@ -24,8 +24,9 @@ module Spree
           conditions << "status:=active"
           conditions << "locale:=#{locale.to_s.gsub(/[^a-zA-Z_-]/, '')}"
           conditions << "currency:=#{currency.to_s.upcase.gsub(/[^A-Z]/, '')}"
-          # ISO8601 sorts lexicographically, so a string compare is sound.
-          conditions << "available_on:<=#{now.iso8601}"
+          # available_on_i, NOT available_on: Typesense silently matches zero
+          # documents for range operators on string fields.
+          conditions << "available_on_i:<=#{now.to_i}"
           # 0 is the sentinel for "never discontinued"; a future timestamp
           # means discontinued LATER, so those products must still be
           # visible now. Mirrors meilisearch.rb's

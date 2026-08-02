@@ -21,7 +21,7 @@ module Spree
 
         client.collections[collection_name]
               .documents
-              .import(documents, action: 'upsert')
+              .import(documents.map { |d| derive_fields(d) }, action: 'upsert')
       end
 
       def remove(product)
@@ -111,6 +111,18 @@ module Spree
         raw = ids.filter_map { |id| Spree::OptionValue.decode_prefixed_id(id) }
         Spree::OptionValue.where(id: raw).group_by(&:option_type_id)
                           .transform_values { |ovs| ovs.map(&:prefixed_id) }
+      end
+
+      # The presenter emits Spree's canonical document; Typesense needs fields
+      # Spree does not provide. Derive them here rather than forking the presenter.
+      def derive_fields(document)
+        doc = document.transform_keys(&:to_s)
+        raw = doc['available_on']
+        doc['available_on_i'] = raw.present? ? Time.parse(raw.to_s).to_i : 0
+        doc
+      rescue ArgumentError
+        doc['available_on_i'] = 0
+        doc
       end
 
       def empty_result(scope, page, limit)

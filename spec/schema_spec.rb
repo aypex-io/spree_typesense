@@ -43,7 +43,7 @@ RSpec.describe Spree::SearchProvider::Typesense::Schema do
       option_value_ids option_values tags units_sold_count
       available_on created_at updated_at
     ]
-    expect(definition[:fields].map { |f| f[:name] }).to match_array(expected + ['preorder'])
+    expect(definition[:fields].map { |f| f[:name] }).to match_array(expected + %w[preorder available_on_i])
   end
 
   it 'declares no field the presenter does not emit' do

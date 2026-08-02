@@ -61,6 +61,13 @@ module Spree
               { name: 'created_at',   type: 'string', facet: false, optional: true, sort: true },
               { name: 'updated_at',   type: 'string', facet: false, optional: true, sort: true },
 
+              # DERIVED, not emitted by the presenter. Typesense silently returns ZERO
+              # results for range filters (<=, >) on string fields — verified against
+              # v30.2 — so availability filtering needs an int64. Derived at index time;
+              # 0 means "always available", which also removes the need for upstream's
+              # NOT EXISTS / IS NULL three-way clause.
+              { name: 'available_on_i', type: 'int64', facet: false },
+
               # spree_core 5.5.1 (what TKF runs, and what this gem develops
               # against) does NOT emit this field. spree_core 5.6+ does
               # (product.preorder?). Declared optional so the collection

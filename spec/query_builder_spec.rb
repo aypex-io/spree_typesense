@@ -25,7 +25,7 @@ RSpec.describe Spree::SearchProvider::Typesense::QueryBuilder do
     end
 
     it 'excludes future-dated products' do
-      expect(conds.join(' ')).to include('available_on:<=2026-08-02')
+      expect(conds.join(' ')).to include('available_on_i:<=1785672000')
     end
 
     # 0 is the sentinel for "never discontinued"; a future discontinue_on

@@ -4,12 +4,12 @@ RSpec.describe Spree::SearchProvider::Typesense, '#search_and_filter' do
   let(:store)    { instance_double('Spree::Store', id: 7, code: 'tkf') }
   let(:provider) { described_class.new(store) }
 
-  def doc(pid, name:, locale: 'en', currency: 'USD', price: 10.0)
+  def doc(pid, name:, locale: 'en', currency: 'USD', price: 10.0, available_on: '2020-01-01T00:00:00Z')
     { 'id' => "#{pid}_#{locale}_#{currency}", 'product_id' => pid,
       'locale' => locale, 'currency' => currency, 'name' => name,
       'status' => 'active', 'in_stock' => true, 'store_ids' => ['7'],
       'discontinue_on' => 0, 'units_sold_count' => 0, 'price' => price,
-      'available_on' => '2020-01-01T00:00:00Z', 'created_at' => '2020-01-01T00:00:00Z' }
+      'available_on' => available_on, 'created_at' => '2020-01-01T00:00:00Z' }
   end
 
   before do
@@ -45,5 +45,18 @@ RSpec.describe Spree::SearchProvider::Typesense, '#search_and_filter' do
   it 'returns an empty result when the engine errors' do
     allow(provider).to receive(:execute_search).and_return(nil)
     expect(provider.search_and_filter(scope: FakeScope.new([]), query: 'x').total_count).to eq(0)
+  end
+
+  # Proves the available_on_i derived-field fix works end to end against a
+  # live server, not just in unit isolation: a future-dated product must not
+  # come back from a real search.
+  it 'excludes a future-dated product from search results' do
+    provider.index_batch([
+      doc('prod_9', name: 'Tongkat Ali Future Batch', available_on: 1.year.from_now.iso8601)
+    ])
+
+    result = provider.search_and_filter(scope: FakeScope.new(%w[prod_1 prod_9]), query: 'tongkat')
+
+    expect(result.products.map(&:prefixed_id)).to eq(%w[prod_1])
   end
 end
