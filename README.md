@@ -1,8 +1,38 @@
 # spree_typesense
 
-Typesense search provider for Spree 5.5.
+A [Typesense](https://typesense.org) search provider for [Spree Commerce](https://spreecommerce.org) 5.5.
 
-See `tongkat-fitness/docs/specs/typesense-search-provider.md`.
+Spree 5.5 ships two search providers — `Database` and `Meilisearch`. This gem
+adds a third, implementing the same `Spree::SearchProvider::Base` contract so
+nothing downstream changes: it returns Spree's own `SearchResult` and
+`FiltersResult` objects, and Spree's existing indexing jobs and
+`rake spree:search:reindex` work unmodified.
+
+Motivation: Meilisearch's open-source build is single-node, with HA reserved for
+its Enterprise edition. Typesense ships Raft-based clustering in open source, so
+a multi-node cluster survives losing a node.
+
+## Install
+
+```ruby
+gem 'spree_typesense', github: 'aypex-io/spree_typesense', tag: 'v0.1.0'
+```
+
+Then select the provider by environment:
+
+```ruby
+# config/initializers/spree.rb
+Spree.search_provider = 'Spree::SearchProvider::Typesense' if ENV['TYPESENSE_URL'].present?
+```
+
+Requires `TYPESENSE_URL` and `TYPESENSE_API_KEY`.
+
+## Engine behaviours this gem depends on
+
+Typesense and Meilisearch diverge in several ways that fail **silently** — no
+error, just wrong answers. Those behaviours are pinned as executable specs in
+`spec/typesense_behaviour_spec.rb`, which doubles as an upgrade canary: run it
+first when bumping the Typesense version.
 
 ## Local development
 
