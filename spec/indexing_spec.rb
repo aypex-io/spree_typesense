@@ -13,6 +13,39 @@ RSpec.describe Spree::SearchProvider::Typesense do
     expect(described_class.indexing_required?).to be(true)
   end
 
+  describe '#ensure_index_settings! against an already-existing collection' do
+    it 'does not raise, and logs a warning instead of silently no-opping' do
+      logger = instance_double(Logger, warn: nil, info: nil, error: nil)
+      allow(Rails).to receive(:logger).and_return(logger)
+
+      expect { provider.ensure_index_settings! }.not_to raise_error
+      expect(logger).to have_received(:warn)
+    end
+
+    # Drives a REAL schema diff: recreate the collection with a field
+    # Schema.definition does not know about, then call ensure_index_settings!
+    # against the running server and check the warning names it.
+    it 'names the differing fields when the live schema has drifted from Schema.definition' do
+      provider.client.collections[provider.collection_name].delete rescue nil
+      drifted = Spree::SearchProvider::Typesense::Schema.definition(provider.collection_name)
+      drifted[:fields] = drifted[:fields].reject { |f| f[:name] == 'preorder' } +
+                          [{ name: 'legacy_only_field', type: 'string', optional: true }]
+      provider.client.collections.create(drifted)
+
+      messages = []
+      logger = instance_double(Logger, info: nil, error: nil)
+      allow(logger).to receive(:warn) { |&blk| messages << blk.call }
+      allow(Rails).to receive(:logger).and_return(logger)
+
+      provider.ensure_index_settings!
+
+      combined = messages.join(' ')
+      expect(combined).to include('legacy_only_field')
+      expect(combined).to include('preorder')
+      expect(combined).to include('recreating the collection')
+    end
+  end
+
   it 'indexes a batch and makes documents retrievable' do
     provider.index_batch([
       { 'id' => 'prod_a_en_USD', 'product_id' => 'prod_a', 'locale' => 'en',

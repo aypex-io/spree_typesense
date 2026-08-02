@@ -15,7 +15,30 @@ module Spree
       def ensure_index_settings!
         client.collections.create(Schema.definition(collection_name))
       rescue ::Typesense::Error::ObjectAlreadyExists
+        log_schema_drift_warning
         nil
+      end
+
+      # Mirrors meilisearch.rb#reindex: default scope is store.products (not
+      # Spree::Product.where(store_id:)), batch size 500, deterministic order,
+      # lazy-preloaded associations. Returns the number of DOCUMENTS indexed
+      # (not products — one product can emit N locale x currency documents).
+      def reindex(scope = nil)
+        scope ||= store.products
+        ensure_index_settings!
+
+        indexed = 0
+        scope.reorder(id: :asc).preload_associations_lazily.find_in_batches(batch_size: 500) do |batch|
+          documents = batch.flat_map { |product| presenter_class.new(product, store).call }
+          next if documents.empty?
+
+          index_batch(documents)
+          indexed += documents.size
+          Rails.logger.info { "[spree_typesense] indexed #{documents.size} (#{indexed} total) into #{collection_name}" }
+        end
+
+        Rails.logger.info { "[spree_typesense] reindex complete: #{indexed} documents" }
+        indexed
       end
 
       def index(product)
@@ -35,7 +58,25 @@ module Spree
         remove_by_id(product.prefixed_id)
       end
 
+      # Public entry point. Delegates to the real Typesense search path and
+      # degrades to the Database provider when Typesense itself is
+      # unreachable, rather than 500ing or silently returning zero results.
+      #
+      # NOTE: execute_search/execute_multi_search re-raise connection-level
+      # failures (see below) specifically so they can reach this rescue —
+      # their own broad `rescue ::Typesense::Error, Faraday::Error` would
+      # otherwise swallow Faraday::ConnectionFailed itself (it IS-A
+      # Faraday::Error) and this clause would be permanently unreachable.
       def search_and_filter(scope:, query: nil, filters: {}, sort: nil, page: 1, limit: 25)
+        search_with_typesense(scope: scope, query: query, filters: filters, sort: sort, page: page, limit: limit)
+      rescue Faraday::ConnectionFailed, Errno::ECONNREFUSED => e
+        Rails.logger.error { "[spree_typesense] unreachable, degrading to Database provider: #{e.message}" }
+        Spree::SearchProvider::Database.new(store).search_and_filter(
+          scope: scope, query: query, filters: filters, sort: sort, page: page, limit: limit
+        )
+      end
+
+      def search_with_typesense(scope:, query: nil, filters: {}, sort: nil, page: 1, limit: 25)
         page  = [page.to_i, 1].max
         limit = limit.to_i.clamp(1, 100)
 
@@ -67,6 +108,16 @@ module Spree
           default_sort: DEFAULT_SORT,
           total_count: result['found'] || 0
         )
+      # `filters` has no Database-provider equivalent to degrade to (facets
+      # are a Typesense-only concept here), so — unlike search_and_filter —
+      # connection failures degrade to an empty facet set rather than
+      # propagating. Needed because execute_search/execute_multi_search now
+      # deliberately re-raise these for search_and_filter's benefit; without
+      # this rescue a Typesense outage would turn a graceful empty-facets
+      # response into an unhandled 500 here.
+      rescue Faraday::ConnectionFailed, Errno::ECONNREFUSED => e
+        Rails.logger.error { "[spree_typesense] unreachable while computing filters, returning empty: #{e.message}" }
+        empty_filters_result
       end
 
       # Composite ids mean one product maps to N documents (locale × currency),
@@ -103,6 +154,11 @@ module Spree
         client.collections[collection_name].documents.search(
           search_params(query: query, conditions: conditions, sort: sort, page: page, limit: limit, facet_by: facet_by)
         )
+      rescue Faraday::ConnectionFailed, Errno::ECONNREFUSED
+        # Let the caller's degradation wrapper handle this — see the note on
+        # +search_and_filter+. Deliberately NOT caught by the broader rescue
+        # below, since Faraday::ConnectionFailed IS-A Faraday::Error.
+        raise
       rescue ::Typesense::Error, Faraday::Error => e
         report_search_failure(e, query)
         nil
@@ -166,6 +222,8 @@ module Spree
         end
 
         results
+      rescue Faraday::ConnectionFailed, Errno::ECONNREFUSED
+        raise
       rescue ::Typesense::Error, Faraday::Error => e
         report_search_failure(e, nil)
         nil
@@ -251,6 +309,40 @@ module Spree
       def report_search_failure(error, query)
         Rails.logger.warn { "[spree_typesense] search failed: #{error.class}: #{error.message}. Run `rake spree:search:reindex`." }
         Rails.error.report(error, handled: true, context: { collection: collection_name, query: query })
+      end
+
+      # Typesense has no in-place "alter collection" API — ensure_index_settings!
+      # hitting ObjectAlreadyExists means a schema change in Schema.definition
+      # will NOT reach an already-created collection. Do not auto-drop it here:
+      # that would destroy a live production index. Log loudly instead, with
+      # a field-level diff when it can be computed cheaply, so an operator
+      # sees WHY new/renamed fields aren't queryable rather than discovering
+      # it via a silent no-op.
+      def log_schema_drift_warning
+        live = client.collections[collection_name].retrieve['fields'].map { |f| f['name'] }
+        expected = Schema.definition(collection_name)[:fields].map { |f| f[:name].to_s }
+        missing = expected - live
+        extra = live - expected
+
+        if missing.any? || extra.any?
+          Rails.logger.warn do
+            "[spree_typesense] collection '#{collection_name}' already exists with a schema that differs from " \
+            "Schema.definition (missing: #{missing.presence || 'none'}; extra: #{extra.presence || 'none'}). " \
+            'ensure_index_settings! is a no-op against an existing collection — schema changes require ' \
+            'recreating the collection (drop + reindex).'
+          end
+        else
+          Rails.logger.warn do
+            "[spree_typesense] collection '#{collection_name}' already exists; ensure_index_settings! is a " \
+            'no-op. If Schema.definition changed, recreate the collection and reindex.'
+          end
+        end
+      rescue StandardError => e
+        Rails.logger.warn do
+          "[spree_typesense] collection '#{collection_name}' already exists; ensure_index_settings! is a " \
+          "no-op (schema comparison failed: #{e.class}: #{e.message}). If Schema.definition changed, recreate " \
+          'the collection and reindex.'
+        end
       end
 
       # Mirrors meilisearch.rb#group_option_values_by_type. Hits the DB.
