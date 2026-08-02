@@ -1,6 +1,16 @@
 require 'bundler/setup'
 require 'spree_typesense'
 
+# This gem's specs run standalone (no host Rails app boots the engine's Zeitwerk
+# autoloader), so Spree::SearchProvider::Base — which spree_core normally makes
+# available via its own engine's autoload paths — never gets defined. Load it
+# explicitly, then eager-require this gem's own app/models the same way a real
+# host app's autoloader would.
+spree_core_root = Gem::Specification.find_by_name('spree_core').gem_dir
+require File.join(spree_core_root, 'app/models/spree/search_provider/base')
+
+Dir[File.join(__dir__, '..', 'app/models/**/*.rb')].sort.each { |f| require f }
+
 RSpec.configure do |config|
   config.disable_monkey_patching!
 
