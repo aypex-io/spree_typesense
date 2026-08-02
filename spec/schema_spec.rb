@@ -30,10 +30,11 @@ RSpec.describe Spree::SearchProvider::Typesense::Schema do
     expect(definition[:fields].map { |f| f[:name] }).not_to include('taxon_ids')
   end
 
-  # This is the spree_core 5.5.1 contract (what TKF runs) and must stay
-  # exact. It asserts every 5.5.1 field is present — it does not assert the
-  # schema declares NOTHING ELSE, since `preorder` (5.6+ forward-compat,
-  # tested separately below) is a deliberate, optional addition.
+  # This is the spree_core 5.5.1 contract (what TKF runs) plus preorder
+  # (emitted by spree_core 5.6+ but not 5.5.1; declared as an optional field
+  # for forward-compatibility). Must stay an EXACT set — match_array, not
+  # include — so an invented field re-added to the schema is caught here,
+  # same as it caught brand/best_selling_score/taxon_ids the first time.
   it 'declares every field the presenter emits' do
     expected = %w[
       product_id locale currency name description slug price compare_at_price
@@ -42,7 +43,7 @@ RSpec.describe Spree::SearchProvider::Typesense::Schema do
       option_value_ids option_values tags units_sold_count
       available_on created_at updated_at
     ]
-    expect(definition[:fields].map { |f| f[:name] }).to include(*expected)
+    expect(definition[:fields].map { |f| f[:name] }).to match_array(expected + ['preorder'])
   end
 
   it 'declares no field the presenter does not emit' do
