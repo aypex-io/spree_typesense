@@ -71,3 +71,46 @@ RSpec.describe Spree::SearchProvider::Typesense, '#search_and_filter degradation
     end
   end
 end
+
+RSpec.describe Spree::SearchProvider::Typesense, '#filters degradation' do
+  let(:store)    { instance_double('Spree::Store', id: 1, code: 'tkf') }
+  let(:provider) { described_class.new(store) }
+
+  before do
+    allow(provider).to receive(:locale).and_return('en')
+    allow(provider).to receive(:currency).and_return('USD')
+  end
+
+  # THE real-failure test, same technique as search_and_filter's above:
+  # points the provider's own client at a port nothing is listening on, so
+  # `filters` drives a genuine Faraday::ConnectionFailed through the real
+  # Typesense client rather than a stub of the method under test. `filters`
+  # has no Database equivalent to delegate to, so the contract here is that
+  # it returns a valid EMPTY FiltersResult instead of raising — asserted
+  # field-by-field, not just "did not raise", because a degraded response
+  # that doesn't match the success-path shape breaks the storefront filter
+  # UI differently than an outage does.
+  describe 'when Typesense is genuinely unreachable' do
+    before do
+      unreachable_client = ::Typesense::Client.new(
+        nodes: [{ host: 'localhost', port: 1, protocol: 'http' }],
+        api_key: 'test-key',
+        connection_timeout_seconds: 1,
+        num_retries: 0
+      )
+      allow(provider).to receive(:client).and_return(unreachable_client)
+    end
+
+    it 'returns a valid empty FiltersResult instead of raising' do
+      result = provider.filters(scope: FakeScope.new([]), query: 'tongkat')
+
+      expect(result).to be_a(Spree::SearchProvider::FiltersResult)
+      expect(result.filters).to eq([])
+      expect(result.total_count).to eq(0)
+      expect(result.sort_options).to eq(
+        %w[price -price name -name -available_on available_on best_selling].map { |id| { id: id } }
+      )
+      expect(result.default_sort).to eq('manual')
+    end
+  end
+end
