@@ -24,6 +24,25 @@ RSpec.describe Spree::SearchProvider::Typesense do
     expect(doc['product_id']).to eq('prod_a')
   end
 
+  it 'indexes a product by delegating to the configured presenter' do
+    product = instance_double('Spree::Product')
+    presenter = instance_double(
+      Spree::SearchProvider::ProductPresenter,
+      call: [
+        { 'id' => 'prod_c_en_USD', 'product_id' => 'prod_c', 'locale' => 'en',
+          'currency' => 'USD', 'status' => 'active', 'name' => 'Delegated',
+          'price' => 9.0, 'created_at' => 1_700_000_000 }
+      ]
+    )
+    presenter_class = class_double('Spree::SearchProvider::ProductPresenter', new: presenter)
+    allow(provider).to receive(:presenter_class).and_return(presenter_class)
+
+    provider.index(product)
+
+    doc = provider.client.collections[provider.collection_name].documents['prod_c_en_USD'].retrieve
+    expect(doc['product_id']).to eq('prod_c')
+  end
+
   it 'removes a document by prefixed id' do
     provider.index_batch([
       { 'id' => 'prod_b_en_USD', 'product_id' => 'prod_b', 'locale' => 'en',

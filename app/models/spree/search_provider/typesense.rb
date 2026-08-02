@@ -12,7 +12,7 @@ module Spree
       end
 
       def index(product)
-        docs = Array(presenter_class.new(product, store).as_documents)
+        docs = Array(presenter_class.new(product, store).call)
         index_batch(docs)
       end
 
@@ -56,7 +56,8 @@ module Spree
       private
 
       def presenter_class
-        Spree::SearchProvider::ProductPresenter
+        # Configurable dependency, exactly as the Meilisearch provider resolves it.
+        Spree::Dependencies.search_product_presenter_class
       end
     end
   end
