@@ -4,6 +4,9 @@ module Spree
       AVAILABLE_SORT_OPTIONS = %w[price -price name -name -available_on available_on best_selling].freeze
       DEFAULT_SORT = 'manual'.freeze
 
+      # Typesense defaults to 10 facet values per field and truncates silently.
+      MAX_FACET_VALUES = 100
+
       def self.indexing_required?
         true
       end
@@ -54,14 +57,11 @@ module Spree
       end
 
       def filters(scope:, query: nil, filters: {})
-        result = execute_search(
-          query: query, filters: filters, sort: nil, page: 1, limit: 0,
-          facet_by: Schema::FACET_FIELDS.join(',')
-        )
+        result, distribution = execute_faceted_search(query: query, filters: filters)
         return empty_filters_result unless result
 
         FiltersResult.new(
-          filters: Facets.build(Facets.normalize(result['facet_counts']), currency: currency),
+          filters: Facets.build(distribution, currency: currency),
           sort_options: AVAILABLE_SORT_OPTIONS.map { |id| { id: id } },
           default_sort: DEFAULT_SORT,
           total_count: result['found'] || 0
@@ -96,14 +96,126 @@ module Spree
       private
 
       def execute_search(query:, filters:, sort:, page:, limit:, facet_by: nil)
+        base, grouped = build_conditions(filters)
+        conditions = base + QueryBuilder.grouped_option_conditions(grouped)
+
+        client.collections[collection_name].documents.search(
+          search_params(query: query, conditions: conditions, sort: sort, page: page, limit: limit, facet_by: facet_by)
+        )
+      rescue ::Typesense::Error::Error, Faraday::Error => e
+        report_search_failure(e, query)
+        nil
+      end
+
+      # Faceted read path. Returns [main_result, distribution], or nil.
+      #
+      # DISJUNCTIVE FACETING: with option values selected, the counts for each
+      # selected option type must be computed with THAT type's own filter
+      # removed — otherwise picking "Red" reports every other colour as zero
+      # and the shopper can never widen their choice. That needs one extra
+      # query per selected type, so it goes through multi_search. With nothing
+      # selected there is nothing to relax, so we stay on the single-query path
+      # rather than pay for a multi_search on every request.
+      def execute_faceted_search(query:, filters:)
+        base, grouped = build_conditions(filters)
+        facet_by = Schema::FACET_FIELDS.join(',')
+
+        if grouped.empty?
+          result = execute_search(query: query, filters: filters, sort: nil, page: 1, limit: 0, facet_by: facet_by)
+          return nil unless result
+
+          return [result, Facets.normalize(result['facet_counts'])]
+        end
+
+        option_type_ids = grouped.keys
+        searches = [
+          search_params(query: query, conditions: base + QueryBuilder.grouped_option_conditions(grouped),
+                        sort: nil, page: 1, limit: 0, facet_by: facet_by)
+        ]
+        option_type_ids.each do |option_type_id|
+          relaxed = QueryBuilder.grouped_option_conditions(grouped.except(option_type_id))
+          searches << search_params(query: query, conditions: base + relaxed,
+                                    sort: nil, page: 1, limit: 0, facet_by: 'option_value_ids')
+        end
+
+        results = execute_multi_search(searches)
+        return nil unless results
+
+        [results.first, merge_disjunctive_facets(results.first, results.drop(1), option_type_ids)]
+      end
+
+      # Typesense answers multi_search with HTTP 200 even when an individual
+      # search failed — the failure is a per-result {error:, code:} body, NOT an
+      # exception. Diverges from the single-search path, so check explicitly or
+      # a broken filter silently degrades to empty facets.
+      def execute_multi_search(searches)
+        response = client.multi_search.perform(
+          { searches: searches.map { |s| s.merge(collection: collection_name) } }
+        )
+        results = response['results']
+
+        failed = Array(results).find { |r| r['error'] }
+        if failed
+          Rails.logger.warn { "[spree_typesense] multi_search failed: #{failed['code']} #{failed['error']}" }
+          return nil
+        end
+
+        results
+      rescue ::Typesense::Error::Error, Faraday::Error => e
+        report_search_failure(e, nil)
+        nil
+      end
+
+      # Start from the main (fully filtered) distribution, then for each option
+      # type overwrite the counts of the values BELONGING TO THAT TYPE with the
+      # counts from that type's own relaxed query. Values of other types keep
+      # the main query's counts. Mapping a value to its type needs the database,
+      # same lookup as +group_option_values_by_type+.
+      def merge_disjunctive_facets(main_result, relaxed_results, option_type_ids)
+        distribution = Facets.normalize(main_result['facet_counts'])
+        merged = (distribution['option_value_ids'] || {}).dup
+
+        per_type = {}
+        relaxed_results.each_with_index do |result, i|
+          per_type[option_type_ids[i]] = Facets.normalize(result['facet_counts'])['option_value_ids'] || {}
+        end
+
+        type_of = option_type_of(per_type.values.flat_map(&:keys).uniq)
+        per_type.each do |option_type_id, relaxed_distribution|
+          relaxed_distribution.each do |prefixed_id, count|
+            merged[prefixed_id] = count if type_of[prefixed_id] == option_type_id
+          end
+        end
+
+        distribution.merge('option_value_ids' => merged)
+      end
+
+      # { 'ov_red' => option_type_id, ... } in one query.
+      def option_type_of(prefixed_ids)
+        raw_ids = prefixed_ids.filter_map { |pid| Spree::OptionValue.decode_prefixed_id(pid) }
+        by_raw_id = Spree::OptionValue.where(id: raw_ids).pluck(:id, :option_type_id).to_h
+
+        prefixed_ids.each_with_object({}) do |prefixed_id, acc|
+          raw_id = Spree::OptionValue.decode_prefixed_id(prefixed_id)
+          acc[prefixed_id] = by_raw_id[raw_id] if raw_id
+        end
+      end
+
+      # Returns [base_conditions, grouped_option_values]. Kept separate because
+      # disjunctive faceting has to rebuild the option half per query while the
+      # base half (system scoping + user filters) stays fixed.
+      def build_conditions(filters)
         f = filters.respond_to?(:to_unsafe_h) ? filters.to_unsafe_h : (filters || {}).to_h
         f = f.transform_keys(&:to_s)
         option_ids = f.delete('with_option_value_ids')
 
-        conditions = QueryBuilder.system_conditions(store: store, locale: locale, currency: currency)
-        conditions += QueryBuilder.user_conditions(f)
-        conditions += QueryBuilder.grouped_option_conditions(group_option_values_by_type(Array(option_ids)))
+        base = QueryBuilder.system_conditions(store: store, locale: locale, currency: currency)
+        base += QueryBuilder.user_conditions(f)
 
+        [base, group_option_values_by_type(Array(option_ids))]
+      end
+
+      def search_params(query:, conditions:, sort:, page:, limit:, facet_by: nil)
         params = {
           q: query.presence || '*',
           query_by: Schema::SEARCHABLE_FIELDS.join(','),
@@ -111,14 +223,20 @@ module Spree
           page: page,
           per_page: limit
         }
-        params[:sort_by]  = QueryBuilder.sort_by(sort) if QueryBuilder.sort_by(sort)
-        params[:facet_by] = facet_by if facet_by
+        params[:sort_by] = QueryBuilder.sort_by(sort) if QueryBuilder.sort_by(sort)
+        if facet_by
+          params[:facet_by] = facet_by
+          # Typesense caps facet values at 10 per field by default and truncates
+          # SILENTLY — a shop with more than 10 colours would just lose the tail.
+          # Meilisearch's equivalent default is 100; match it.
+          params[:max_facet_values] = MAX_FACET_VALUES
+        end
+        params
+      end
 
-        client.collections[collection_name].documents.search(params)
-      rescue ::Typesense::Error::Error, Faraday::Error => e
-        Rails.logger.warn { "[spree_typesense] search failed: #{e.class}: #{e.message}. Run `rake spree:search:reindex`." }
-        Rails.error.report(e, handled: true, context: { collection: collection_name, query: query })
-        nil
+      def report_search_failure(error, query)
+        Rails.logger.warn { "[spree_typesense] search failed: #{error.class}: #{error.message}. Run `rake spree:search:reindex`." }
+        Rails.error.report(error, handled: true, context: { collection: collection_name, query: query })
       end
 
       # Mirrors meilisearch.rb#group_option_values_by_type. Hits the DB.

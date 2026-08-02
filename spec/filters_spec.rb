@@ -69,6 +69,122 @@ RSpec.describe Spree::SearchProvider::Typesense, '#filters' do
   end
 end
 
+RSpec.describe Spree::SearchProvider::Typesense::Facets, '.option_facets' do
+  let(:colour) { FakeOptionType.new(prefixed_id: 'optt_colour', name: 'Colour', label: 'Colour', kind: 'color') }
+  let(:size)   { FakeOptionType.new(prefixed_id: 'optt_size', name: 'Size', label: 'Size', kind: 'text') }
+
+  def ov(id, type, position, type_id, image: FakeImage.new(attached: false))
+    FakeOptionValue.new(id: id, prefixed_id: "ov_#{id}", name: id, label: id.capitalize, position: position,
+                        color_code: "##{id[0, 3]}", option_type_id: type_id, option_type: type, image: image)
+  end
+
+  # Deliberately declared out of position order so an implementation that just
+  # preserves the distribution's key order cannot pass.
+  let(:records) { [ov('red', colour, 2, 1), ov('blue', colour, 1, 1), ov('small', size, 1, 2)] }
+  let(:distribution) { { 'ov_red' => 5, 'ov_blue' => 3, 'ov_small' => 9 } }
+
+  before { stub_ar_lookup(Spree::OptionValue, records) }
+
+  subject(:facets) { described_class.option_facets(distribution) }
+
+  it 'returns one entry per option TYPE, not per value' do
+    expect(facets.map { |f| f[:id] }).to contain_exactly('optt_colour', 'optt_size')
+  end
+
+  it 'carries the option type metadata' do
+    expect(facets.find { |f| f[:id] == 'optt_colour' }).to include(
+      type: 'option', name: 'Colour', label: 'Colour', kind: 'color'
+    )
+  end
+
+  it 'sorts options by position, not by distribution order' do
+    colour_facet = facets.find { |f| f[:id] == 'optt_colour' }
+    expect(colour_facet[:options].map { |o| o[:id] }).to eq(%w[ov_blue ov_red])
+  end
+
+  it 'emits exactly the documented option key set' do
+    option = facets.find { |f| f[:id] == 'optt_size' }[:options].first
+    expect(option.keys).to contain_exactly(:id, :name, :label, :position, :color_code, :image_url, :count)
+    expect(option).to include(id: 'ov_small', name: 'small', label: 'Small', position: 1, count: 9)
+  end
+
+  it 'leaves image_url nil when no image is attached' do
+    expect(facets.flat_map { |f| f[:options] }.map { |o| o[:image_url] }).to all(be_nil)
+  end
+
+  it 'resolves image_url through cdn_image_url when an image is attached' do
+    imaged = ov('red', colour, 2, 1, image: FakeImage.new(attached: true))
+    stub_ar_lookup(Spree::OptionValue, [imaged])
+    url_helpers = double('url_helpers')
+    allow(url_helpers).to receive(:cdn_image_url).with(imaged.image).and_return('https://cdn/red.png')
+    allow(Rails).to receive(:application).and_return(double('app', routes: double('routes', url_helpers: url_helpers)))
+
+    facet = described_class.option_facets('ov_red' => 1)
+    expect(facet.first[:options].first[:image_url]).to eq('https://cdn/red.png')
+  end
+
+  # A stale index can carry values that no longer exist in the database.
+  it 'drops distribution entries with no matching OptionValue record' do
+    facets = described_class.option_facets(distribution.merge('ov_deleted' => 4))
+    expect(facets.flat_map { |f| f[:options] }.map { |o| o[:id] }).not_to include('ov_deleted')
+  end
+end
+
+RSpec.describe Spree::SearchProvider::Typesense::Facets, '.category_facet' do
+  let(:records) do
+    [FakeTaxon.new(id: 'a', prefixed_id: 'tax_a', name: 'Shirts', permalink: 'cat/shirts'),
+     FakeTaxon.new(id: 'b', prefixed_id: 'tax_b', name: 'Shoes', permalink: 'cat/shoes')]
+  end
+
+  before { stub_ar_lookup(Spree::Taxon, records) }
+
+  subject(:facet) { described_class.category_facet('tax_a' => 4, 'tax_b' => 2) }
+
+  it "uses the literal id 'categories'" do
+    expect(facet).to include(id: 'categories', type: 'category')
+  end
+
+  it 'emits exactly the documented category key set' do
+    expect(facet[:options].first.keys).to contain_exactly(:id, :name, :permalink, :count)
+    expect(facet[:options]).to contain_exactly(
+      { id: 'tax_a', name: 'Shirts', permalink: 'cat/shirts', count: 4 },
+      { id: 'tax_b', name: 'Shoes',  permalink: 'cat/shoes',  count: 2 }
+    )
+  end
+
+  it 'drops distribution entries with no matching Taxon record' do
+    f = described_class.category_facet('tax_a' => 4, 'tax_gone' => 1)
+    expect(f[:options].map { |o| o[:id] }).to eq(['tax_a'])
+  end
+end
+
+RSpec.describe Spree::SearchProvider::Typesense::Facets, '.build' do
+  before do
+    stub_ar_lookup(Spree::OptionValue, [
+                     FakeOptionValue.new(id: 'red', prefixed_id: 'ov_red', name: 'red', label: 'Red', position: 1,
+                                         color_code: '#f00', option_type_id: 1,
+                                         option_type: FakeOptionType.new(prefixed_id: 'optt_colour', name: 'Colour',
+                                                                         label: 'Colour', kind: 'color'),
+                                         image: FakeImage.new(attached: false))
+                   ])
+    stub_ar_lookup(Spree::Taxon, [FakeTaxon.new(id: 'a', prefixed_id: 'tax_a', name: 'Shirts', permalink: 'shirts')])
+  end
+
+  it 'appends option and category facets after the 6a price/availability facets' do
+    distribution = {
+      'price' => { '10.0' => 1 }, 'in_stock' => { 'true' => 1 },
+      'option_value_ids' => { 'ov_red' => 1 }, 'category_ids' => { 'tax_a' => 1 }
+    }
+    expect(described_class.build(distribution, currency: 'USD').map { |f| f[:id] })
+      .to eq(%w[price availability optt_colour categories])
+  end
+
+  it 'omits option and category facets when the distribution has none' do
+    expect(described_class.build({ 'in_stock' => { 'true' => 1 } }, currency: 'USD').map { |f| f[:id] })
+      .to eq(['availability'])
+  end
+end
+
 RSpec.describe Spree::SearchProvider::Typesense::Facets, '.normalize' do
   it 'turns Typesense facet_counts into a field => {value => count} hash' do
     raw = [{ 'field_name' => 'in_stock',

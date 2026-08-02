@@ -27,6 +27,65 @@ module Spree
       prefixed_id_string.to_s.split('_', 2).last
     end
   end
+
+  # Option/category facets need Spree lookups for names, labels, positions,
+  # permalinks and image URLs. There is no ActiveRecord in this suite, so these
+  # classes exist only to be stubbed: `.decode_prefixed_id` behaves like the
+  # real PrefixedId concern, and `.where` is stubbed per-example to return a
+  # `FakeArRelation`. Typesense itself stays real.
+  class OptionValue
+    def self.decode_prefixed_id(prefixed_id_string)
+      return nil if prefixed_id_string.to_s.empty?
+
+      prefixed_id_string.to_s.split('_', 2).last
+    end
+  end
+
+  class Taxon
+    def self.decode_prefixed_id(prefixed_id_string)
+      return nil if prefixed_id_string.to_s.empty?
+
+      prefixed_id_string.to_s.split('_', 2).last
+    end
+  end
+end
+
+# The subset of ActiveRecord::Relation the facet builders actually call.
+# `preload_associations_lazily` comes from ar_lazy_preload (a spree_core
+# dependency) in a real host app.
+class FakeArRelation
+  def initialize(records)
+    @records = records
+  end
+
+  def includes(*) = self
+  def preload_associations_lazily = self
+  def index_by(&block) = @records.index_by(&block)
+  def pluck(*fields) = @records.map { |r| fields.map { |f| r.public_send(f) } }
+  def to_a = @records
+end
+
+FakeImage = Struct.new(:attached, keyword_init: true) do
+  def attached? = !!attached
+end
+
+FakeOptionType = Struct.new(:prefixed_id, :name, :label, :kind, keyword_init: true)
+
+FakeOptionValue = Struct.new(
+  :id, :prefixed_id, :name, :label, :position, :color_code, :option_type_id, :option_type, :image,
+  keyword_init: true
+)
+
+FakeTaxon = Struct.new(:id, :prefixed_id, :name, :permalink, keyword_init: true)
+
+# Stub `Spree::OptionValue.where(id:)` / `Spree::Taxon.where(id:)` to return the
+# subset of `records` whose ids were asked for — the same filtering the real
+# query would do, so a builder that ignores the id list cannot pass silently.
+def stub_ar_lookup(klass, records)
+  allow(klass).to receive(:where) do |args|
+    wanted = Array(args[:id]).map(&:to_s)
+    FakeArRelation.new(records.select { |r| wanted.include?(r.id.to_s) })
+  end
 end
 
 # Stand-ins for the ActiveRecord::Relation `search_and_filter` receives as
