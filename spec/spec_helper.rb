@@ -9,6 +9,7 @@ require 'spree_typesense'
 spree_core_root = Gem::Specification.find_by_name('spree_core').gem_dir
 require File.join(spree_core_root, 'app/models/spree/search_provider/base')
 require File.join(spree_core_root, 'app/models/spree/search_provider/search_result')
+require File.join(spree_core_root, 'app/models/spree/search_provider/filters_result')
 require File.join(spree_core_root, 'app/presenters/spree/search_provider/product_presenter')
 
 Dir[File.join(__dir__, '..', 'app/models/**/*.rb')].sort.each { |f| require f }

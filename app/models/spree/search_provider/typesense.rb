@@ -1,6 +1,9 @@
 module Spree
   module SearchProvider
     class Typesense < Base
+      AVAILABLE_SORT_OPTIONS = %w[price -price name -name -available_on available_on best_selling].freeze
+      DEFAULT_SORT = 'manual'.freeze
+
       def self.indexing_required?
         true
       end
@@ -48,6 +51,21 @@ module Spree
 
         SearchResult.new(products: products, total_count: result['found'] || 0,
                           pagy: build_pagy(result['found'] || 0, page, limit))
+      end
+
+      def filters(scope:, query: nil, filters: {})
+        result = execute_search(
+          query: query, filters: filters, sort: nil, page: 1, limit: 0,
+          facet_by: Schema::FACET_FIELDS.join(',')
+        )
+        return empty_filters_result unless result
+
+        FiltersResult.new(
+          filters: Facets.build(Facets.normalize(result['facet_counts']), currency: currency),
+          sort_options: AVAILABLE_SORT_OPTIONS.map { |id| { id: id } },
+          default_sort: DEFAULT_SORT,
+          total_count: result['found'] || 0
+        )
       end
 
       # Composite ids mean one product maps to N documents (locale × currency),
@@ -127,6 +145,15 @@ module Spree
 
       def empty_result(scope, page, limit)
         SearchResult.new(products: scope.none, total_count: 0, pagy: build_pagy(0, page, limit))
+      end
+
+      def empty_filters_result
+        FiltersResult.new(
+          filters: [],
+          sort_options: AVAILABLE_SORT_OPTIONS.map { |id| { id: id } },
+          default_sort: DEFAULT_SORT,
+          total_count: 0
+        )
       end
 
       def build_pagy(count, page, limit)
