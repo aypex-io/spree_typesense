@@ -74,6 +74,10 @@ emits the same fields as on 5.6:
 - **Metafields became custom fields.** `cf_*` keys come from
   `product.custom_fields`, storefront-visible definitions only, searchable or
   sortable as before.
+- **Products belong to collections, and `in_collection` is a whitelisted
+  filter.** Documents carry `collection_ids` (6.x only), and `in_collection`
+  filters on it, so a collection listing returns, counts and facets only that
+  collection. Manual (position) sort within a collection is not supported.
 - **Descriptions are rich-text HTML in a plain column.** `description` is
   indexed as plain text (`Spree::RichTextHelper.to_plain_text`), as
   `spree_meilisearch` 6.0 does, so tag names are not searchable.
@@ -86,8 +90,11 @@ emits the same fields as on 5.6:
   does not degrade into a storefront one.
 
 Upgrading a store from 5.x to 6.0 changes its category ids (to `ctg_`) and its
-option names (to `label`), so **reindex after upgrading Spree**
-(`rake spree:search:reindex`). Staying on 5.x needs no reindex. Loading and
+option names (to `label`), and adds `collection_ids`, so **reindex after
+upgrading Spree** (`rake spree:search:reindex`). `ensure_index_settings!` never
+alters an existing collection, so one created before this release has no
+`collection_ids` field, and `in_collection` searches against it return nothing
+(the failure is logged): drop the collection before reindexing. Staying on 5.x needs no reindex. Loading and
 using the gem on 6.0 triggers no Spree deprecation warning; the suite raises on
 any.
 

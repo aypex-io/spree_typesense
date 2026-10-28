@@ -56,6 +56,12 @@ module Spree
           when 'in_categories'
             ids = valid_ids(value)
             "category_ids:=[#{ids.join(',')}]" if ids.any?
+          # Spree 6.0 whitelists in_collection and its Database provider
+          # applies it; 5.x has no collections, and documents built there carry
+          # no collection_ids. Membership only: manual (position) sort within a
+          # collection needs membership documents, which this gem does not emit.
+          when 'in_collection'
+            "collection_ids:=#{sanitize_id(value)}" if SpreeTypesense.spree_6? && valid_id?(value)
           when 'with_option_value_ids'
             nil # handled by grouped_option_conditions
           end

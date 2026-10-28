@@ -68,7 +68,8 @@ RSpec.describe SpreeTypesense::ProductPresenter do
       available_on: Time.utc(2024, 1, 2),
       created_at: Time.utc(2023, 5, 6),
       updated_at: Time.utc(2024, 7, 8),
-      custom_fields: custom_fields
+      custom_fields: custom_fields,
+      collections: [FakeCatalog::Collection.new('coll_summer'), FakeCatalog::Collection.new('coll_linen')]
     )
   end
 
@@ -158,6 +159,10 @@ RSpec.describe SpreeTypesense::ProductPresenter do
                  end
       expect(document('en', 'USD').select { |k, _| k.to_s.start_with?('cf_') }).to eq(expected)
     end
+
+    it 'emits no collection_ids: 5.x has no collections' do
+      expect(document('en', 'USD')).not_to have_key(:collection_ids)
+    end
   end
 
   context 'on Spree 6.x', if: SpreeTypesense.spree_6? do
@@ -188,11 +193,16 @@ RSpec.describe SpreeTypesense::ProductPresenter do
       expect(document('en', 'USD')[:preorder]).to be(true)
     end
 
-    it 'emits the same field names as on 5.6.1' do
+    it 'emits collection_ids from collections' do
+      expect(document('en', 'USD')[:collection_ids]).to eq(%w[coll_summer coll_linen])
+    end
+
+    it 'emits the same field names as on 5.6.1, plus collection_ids' do
       expect(document('en', 'USD').keys).to eq(
         %i[id product_id locale currency name description slug price compare_at_price status sku in_stock preorder
-           store_ids channel_ids discontinue_on category_ids category_names option_type_ids option_type_names
-           option_value_ids option_values tags units_sold_count available_on created_at updated_at] +
+           store_ids channel_ids discontinue_on category_ids category_names collection_ids option_type_ids
+           option_type_names option_value_ids option_values tags units_sold_count available_on created_at
+           updated_at] +
         %w[cf_material cf_weight]
       )
     end

@@ -4,9 +4,10 @@ module Spree
       module Schema
         # Transcribed from SpreeTypesense::ProductPresenter#build_document (a
         # port of spree_core 5.6.1's, which 6.0 removed from core). Every
-        # supported Spree version emits the same named fields; only their
-        # sources differ. `cf_*` keys are dynamic and left undeclared — Typesense
-        # stores them without indexing them.
+        # supported Spree version emits the same named fields, plus
+        # `collection_ids` on 6.x; only their sources differ. `cf_*` keys are
+        # dynamic and left undeclared — Typesense stores them without indexing
+        # them.
         # Do not add fields the presenter does not emit.
         SEARCHABLE_FIELDS = %w[name description sku option_values category_names tags].freeze
 
@@ -50,6 +51,10 @@ module Spree
 
               { name: 'category_ids',   type: 'string[]', facet: true, optional: true },
               { name: 'category_names', type: 'string[]', facet: false, optional: true },
+              # Spree 6.x only, for the in_collection filter. Typesense filters
+              # on any indexed field, so no facet: collection facets are not
+              # offered. Optional because 5.x documents never carry it.
+              { name: 'collection_ids', type: 'string[]', facet: false, optional: true },
 
               { name: 'option_type_ids',   type: 'string[]', facet: false, optional: true },
               { name: 'option_type_names', type: 'string[]', facet: false, optional: true },

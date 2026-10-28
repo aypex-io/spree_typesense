@@ -1,7 +1,7 @@
 # Plain-Ruby stand-ins for the catalogue a product presenter reads: product,
-# store, markets, categories, option types and values, variants, publications
-# and custom fields. Categories also stand in for the records the category
-# facet looks up. No ActiveRecord, matching the rest of this suite. Each
+# store, markets, categories, collections, option types and values, variants,
+# publications and custom fields. Categories also stand in for the records the
+# category facet looks up. No ActiveRecord, matching the rest of this suite. Each
 # fake answers only what a presenter calls, so a presenter that starts calling
 # something new fails loudly with NoMethodError instead of passing.
 #
@@ -62,6 +62,8 @@ module FakeCatalog
 
   Price = Struct.new(:amount)
 
+  Collection = Struct.new(:prefixed_id)
+
   CustomFieldDefinition = Struct.new(:filter_key, :field_type, :searchable, :sortable, :storefront_visible,
                                      keyword_init: true) do
     # Metafield definitions before 5.6.1 have no search capabilities.
@@ -112,7 +114,7 @@ module FakeCatalog
                    status: 'active', sku: nil, in_stock: true, preorder: false, store_id: 1,
                    channel_ids_by_store_id: {}, discontinue_on: nil, categories: [], option_types: [],
                    variants: [], master: Variant.new(option_values: []), tag_list: [], units_sold_count: 0,
-                   available_on: nil, created_at: nil, updated_at: nil, custom_fields: [])
+                   available_on: nil, created_at: nil, updated_at: nil, custom_fields: [], collections: [])
       @prefixed_id = prefixed_id
       @names = names
       @descriptions = descriptions
@@ -136,6 +138,7 @@ module FakeCatalog
       @created_at = created_at
       @updated_at = updated_at
       @custom_fields = custom_fields
+      @collections = collections
     end
 
     def name(locale: nil) = translate(@names, locale)
@@ -155,6 +158,11 @@ module FakeCatalog
     def categories = @categories
     def variants = @variants
     def custom_fields = @custom_fields
+
+    # Collections are new in Spree 6.0.
+    if SpreeTypesense.spree_6?
+      def collections = @collections
+    end
 
     def taxons
       deprecated_on_spree_6('Spree::Product#taxons is deprecated and will be removed in Spree 6.1. Use #categories instead.')

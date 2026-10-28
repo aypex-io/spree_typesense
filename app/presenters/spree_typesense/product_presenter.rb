@@ -18,10 +18,11 @@ module SpreeTypesense
   # this class checks for the capability rather than the patch version.
   # On 6.0 the same fields come from 6.0's sources, as in spree_meilisearch
   # 6.0's presenter: categories, `label`, storefront-visible custom fields and a
-  # plain-text description. Those sources sit behind the private seams below.
+  # plain-text description, plus `collection_ids` for the in_collection filter.
+  # Those sources sit behind the private seams below.
   #
   # Left out on purpose (later work): membership documents for manual sort,
-  # `collection_ids` and `option_value_combination_ids`.
+  # and `option_value_combination_ids`.
   class ProductPresenter
     attr_reader :product, :store
 
@@ -87,7 +88,12 @@ module SpreeTypesense
         channel_ids: channel_ids_for_store,
         discontinue_on: product.discontinue_on&.to_i || 0,
         category_ids: category_ids_with_ancestors,
-        category_names: product_categories.map { |c| translated(c, :name, fallback_locale) },
+        category_names: product_categories.map { |c| translated(c, :name, fallback_locale) }
+      )
+      # 6.x only, where products belong to collections; placed as in
+      # spree_meilisearch 6.0's document.
+      document[:collection_ids] = product.collections.map(&:prefixed_id) if SpreeTypesense.spree_6?
+      document.merge!(
         option_type_ids: product.option_types.map(&:prefixed_id),
         option_type_names: product.option_types.map { |ot| translated(ot, label_attribute, fallback_locale) },
         option_value_ids: variant_option_value_ids,
