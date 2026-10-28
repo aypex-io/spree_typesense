@@ -85,7 +85,7 @@ module Spree
         search_with_typesense(scope: scope, query: query, filters: filters, sort: sort, page: page, limit: limit)
       rescue Faraday::ConnectionFailed, Errno::ECONNREFUSED => e
         Rails.logger.error { "[spree_typesense] unreachable, degrading to Database provider: #{e.message}" }
-        Spree::SearchProvider::Database.new(store).search_and_filter(
+        fallback_provider.search_and_filter(
           scope: scope, query: query, filters: filters, sort: sort, page: page, limit: limit
         )
       end
@@ -396,6 +396,18 @@ module Spree
 
       def build_pagy(count, page, limit)
         Pagy::Offset.new(count: count, page: page, limit: limit)
+      end
+
+      # On 6.x the Database provider takes the same `audience:` as this one, and
+      # uses it for its query and ransack authorisation, so a back-office search
+      # (audience: nil) must not degrade into a storefront one. 5.x providers
+      # take the store only.
+      def fallback_provider
+        if SpreeTypesense.spree_6?
+          Spree::SearchProvider::Database.new(store, audience: audience)
+        else
+          Spree::SearchProvider::Database.new(store)
+        end
       end
 
       # The gem's own presenter on every version, unless the application named

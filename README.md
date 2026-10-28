@@ -71,8 +71,9 @@ emits the same fields as on 5.6:
   `product.variants`.
 - **Providers take an `audience:`** (`:store` by default, `nil` for the back
   office). The gem inherits `Base#initialize`, so `custom_field_schema` is
-  limited to what that audience may see. The Database fallback is still built
-  with the store only.
+  limited to what that audience may see. When Typesense is unreachable, the
+  Database fallback is built with the same audience, so a back-office search
+  does not degrade into a storefront one.
 
 Upgrading a store from 5.x to 6.0 changes its category ids (to `ctg_`) and its
 option names (to `label`), so **reindex after upgrading Spree**

@@ -17,20 +17,21 @@ RSpec.describe Spree::SearchProvider::Typesense, '#search_and_filter degradation
   # `rescue ::Typesense::Error, Faraday::Error` would otherwise swallow this
   # exact exception before it ever reaches search_and_filter.
   describe 'when Typesense is genuinely unreachable' do
-    before do
-      unreachable_client = ::Typesense::Client.new(
+    let(:unreachable_client) do
+      ::Typesense::Client.new(
         nodes: [{ host: 'localhost', port: 1, protocol: 'http' }],
         api_key: 'test-key',
         connection_timeout_seconds: 1,
         num_retries: 0
       )
-      allow(provider).to receive(:client).and_return(unreachable_client)
     end
+
+    before { allow(provider).to receive(:client).and_return(unreachable_client) }
 
     it 'delegates to the Database provider instead of returning a degraded empty result' do
       database_result = instance_double(Spree::SearchProvider::SearchResult)
       database_provider = instance_double(Spree::SearchProvider::Database, search_and_filter: database_result)
-      allow(Spree::SearchProvider::Database).to receive(:new).with(store).and_return(database_provider)
+      allow(Spree::SearchProvider::Database).to receive(:new).and_return(database_provider)
 
       scope = FakeScope.new([])
       result = provider.search_and_filter(scope: scope, query: 'tongkat', filters: { a: 1 }, sort: '-price', page: 2,
@@ -40,6 +41,50 @@ RSpec.describe Spree::SearchProvider::Typesense, '#search_and_filter degradation
       expect(database_provider).to have_received(:search_and_filter).with(
         scope: scope, query: 'tongkat', filters: { a: 1 }, sort: '-price', page: 2, limit: 10
       )
+    end
+
+    context 'on Spree 5.x', unless: SpreeTypesense.spree_6? do
+      it 'builds the Database provider with the store only, as 5.x providers take' do
+        allow(Spree::SearchProvider::Database).to receive(:new).and_call_original
+
+        provider.search_and_filter(scope: FakeScope.new([]), query: 'x') rescue nil
+
+        expect(Spree::SearchProvider::Database).to have_received(:new).with(store)
+      end
+    end
+
+    # A back-office search (audience: nil) must not degrade into a storefront
+    # one: 6.x's Database provider scopes its query and ransack by audience.
+    context 'on Spree 6.x', if: SpreeTypesense.spree_6? do
+      [:store, nil].each do |audience|
+        context "with audience: #{audience.inspect}" do
+          let(:provider) { described_class.new(store, audience: audience) }
+
+          it 'builds the Database provider with the same audience' do
+            database_provider = instance_double(Spree::SearchProvider::Database, search_and_filter: :database_result)
+            allow(Spree::SearchProvider::Database).to receive(:new).and_return(database_provider)
+
+            expect(provider.search_and_filter(scope: FakeScope.new([]), query: 'x')).to eq(:database_result)
+            expect(Spree::SearchProvider::Database).to have_received(:new).with(store, audience: audience)
+          end
+        end
+      end
+
+      context 'with a real Database provider' do
+        let(:provider) { described_class.new(store, audience: nil) }
+
+        it 'hands it the audience' do
+          built = []
+          allow(Spree::SearchProvider::Database).to receive(:new).and_wrap_original do |original, *args, **kwargs|
+            original.call(*args, **kwargs).tap { |db| built << db }
+          end
+
+          # Searching needs a database this suite does not have; building is enough.
+          provider.search_and_filter(scope: FakeScope.new([]), query: 'x') rescue nil
+
+          expect(built.map(&:audience)).to eq([nil])
+        end
+      end
     end
   end
 
