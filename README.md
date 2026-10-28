@@ -1,9 +1,11 @@
 # spree_typesense
 
-A [Typesense](https://typesense.org) search provider for [Spree Commerce](https://spreecommerce.org) 5.5.
+A [Typesense](https://typesense.org) search provider for [Spree Commerce](https://spreecommerce.org),
+supporting Spree 5.5 to 6.x (`spree_core >= 5.5, < 7.0`).
 
-Spree 5.5 ships two search providers — `Database` and `Meilisearch`. This gem
-adds a third, implementing the same `Spree::SearchProvider::Base` contract so
+Spree 5.5 ships two search providers — `Database` and `Meilisearch` (which moved
+into the `spree_meilisearch` gem in 6.0). This gem adds a Typesense one,
+implementing the same `Spree::SearchProvider::Base` contract so
 nothing downstream changes: it returns Spree's own `SearchResult` and
 `FiltersResult` objects, and Spree's existing indexing jobs and
 `rake spree:search:reindex` work unmodified.
@@ -15,7 +17,7 @@ a multi-node cluster survives losing a node.
 ## Install
 
 ```ruby
-gem 'spree_typesense', github: 'aypex-io/spree_typesense', tag: 'v0.1.0'
+gem 'spree_typesense', github: 'aypex-io/spree_typesense', tag: 'v0.2.0'
 ```
 
 Then select the provider by environment:
@@ -33,6 +35,73 @@ Typesense and Meilisearch diverge in several ways that fail **silently** — no
 error, just wrong answers. Those behaviours are pinned as executable specs in
 `spec/typesense_behaviour_spec.rb`, which doubles as an upgrade canary: run it
 first when bumping the Typesense version.
+
+### Spree versions
+
+The gem builds its documents with its own `SpreeTypesense::ProductPresenter`
+on every Spree version, so the index does not depend on which presenter core
+happens to ship. On 5.x its documents are exactly those of core's
+`Spree::SearchProvider::ProductPresenter` for that release
+(`spec/product_presenter_spec.rb` compares the two field for field): 5.5.x
+emits no `preorder`, 5.6.0 adds it, and 5.6.1 adds `cf_*` keys for searchable
+or sortable metafields. The presenter follows the capabilities core's models
+gained in those releases (`Product#preorder?`, the metafield definition's
+`searchable?`) rather than the patch version.
+
+An application can set `Spree::Dependencies.search_product_presenter` to a
+subclass of `SpreeTypesense::ProductPresenter`, and the provider indexes with
+it. Any other presenter there is ignored and the gem's own is used: the
+setting is shared by every installed search gem, and another gem's documents
+(`spree_meilisearch`'s, say) do not fit this collection's schema.
+
+`cf_*` keys are stored in each document but are not declared in the schema, so
+Typesense does not index them: they cannot be searched, filtered or sorted on.
+That is the same on 5.6.1 and 6.x.
+
+Spree 6.0 changed what the documents are built from. The gem follows it, and
+emits the same fields as on 5.6:
+
+- **Core ships no search presenter** (`search_product_presenter: nil`). At boot
+  the engine registers `SpreeTypesense::ProductPresenter` as
+  `Spree::Dependencies.search_product_presenter`, unless the application or
+  another search gem already set one — the same pattern as `spree_meilisearch`.
+  It registers only when Typesense is the selected `Spree.search_provider`, so
+  with `spree_meilisearch` installed alongside, each gem's presenter goes with
+  its own provider. Either way the provider indexes with this gem's presenter
+  (see above).
+- **`Spree::Taxon` became `Spree::Category`**, with `ctg_` prefixed ids.
+  `category_ids` and `category_names` come from `product.categories`, and the
+  category facet looks up `Spree::Category`. `Spree::Taxon` is a deprecated
+  alias on 6.0 and the gem never references it there.
+- **Option type and value `presentation` became `label`.**
+  `option_type_names` and `option_values` read `label`.
+- **Metafields became custom fields.** `cf_*` keys come from
+  `product.custom_fields`: definitions that are storefront-visible and marked
+  searchable or sortable. As on 5.6.1 they are stored unindexed, so neither
+  flag makes them searchable or sortable in Typesense.
+- **Products belong to collections, and `in_collection` is a whitelisted
+  filter.** Documents carry `collection_ids` (6.x only), and `in_collection`
+  filters on it, so a collection listing returns, counts and facets only that
+  collection. Manual (position) sort within a collection is not supported.
+- **Descriptions are rich-text HTML in a plain column.** `description` is
+  indexed as plain text (`Spree::RichTextHelper.to_plain_text`), as
+  `spree_meilisearch` 6.0 does, so tag names are not searchable.
+- **`variants_including_master` is deprecated.** Option values come from
+  `product.variants`.
+- **Providers take an `audience:`** (`:store` by default, `nil` for the back
+  office). The gem inherits `Base#initialize`, so `custom_field_schema` is
+  limited to what that audience may see. When Typesense is unreachable, the
+  Database fallback is built with the same audience, so a back-office search
+  does not degrade into a storefront one.
+
+Upgrading a store from 5.x to 6.0 changes its category ids (to `ctg_`) and its
+option names (to `label`), and adds `collection_ids`, so **reindex after
+upgrading Spree** (`rake spree:search:reindex`). `ensure_index_settings!` never
+alters an existing collection, so one created before this release has no
+`collection_ids` field, and `in_collection` searches against it return nothing
+(the failure is logged): drop the collection before reindexing. Staying on 5.x
+needs no reindex. Loading and using the gem on 6.0 triggers no Spree
+deprecation warning; the suite raises on any.
 
 ## Local development
 

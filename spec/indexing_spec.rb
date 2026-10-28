@@ -62,7 +62,7 @@ RSpec.describe Spree::SearchProvider::Typesense do
   it 'indexes a product by delegating to the configured presenter' do
     product = instance_double('Spree::Product')
     presenter = instance_double(
-      Spree::SearchProvider::ProductPresenter,
+      SpreeTypesense::ProductPresenter,
       call: [
         { 'id' => 'prod_c_en_USD', 'product_id' => 'prod_c', 'locale' => 'en',
           'currency' => 'USD', 'status' => 'active', 'name' => 'Delegated',
@@ -71,7 +71,7 @@ RSpec.describe Spree::SearchProvider::Typesense do
           'created_at' => '2024-01-01T00:00:00Z' }
       ]
     )
-    presenter_class = class_double('Spree::SearchProvider::ProductPresenter', new: presenter)
+    presenter_class = class_double('SpreeTypesense::ProductPresenter', new: presenter)
     allow(provider).to receive(:presenter_class).and_return(presenter_class)
 
     provider.index(product)

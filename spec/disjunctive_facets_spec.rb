@@ -40,7 +40,7 @@ RSpec.describe Spree::SearchProvider::Typesense, 'disjunctive faceting' do
       doc('prod_3', ['ov_blue'])
     ])
     stub_ar_lookup(Spree::OptionValue, [red, blue])
-    stub_ar_lookup(Spree::Taxon, [])
+    stub_ar_lookup(category_class, [])
   end
 
   def option_facet(result)

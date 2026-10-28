@@ -6,14 +6,40 @@ require 'spree_typesense'
 # available via its own engine's autoload paths — never gets defined. Load it
 # explicitly, then eager-require this gem's own app/models the same way a real
 # host app's autoloader would.
+#
+# Which core files exist depends on the version under test, so pick them by
+# version rather than probing the filesystem: 6.0 removed core's search
+# presenter, and added the custom-field schema and rich-text helper that Base
+# and this gem's presenter use there.
 spree_core_root = Gem::Specification.find_by_name('spree_core').gem_dir
 require File.join(spree_core_root, 'app/models/spree/search_provider/base')
 require File.join(spree_core_root, 'app/models/spree/search_provider/search_result')
 require File.join(spree_core_root, 'app/models/spree/search_provider/filters_result')
-require File.join(spree_core_root, 'app/presenters/spree/search_provider/product_presenter')
+if SpreeTypesense.spree_6?
+  require File.join(spree_core_root, 'app/services/spree/search_provider/custom_field_schema')
+  require File.join(spree_core_root, 'app/helpers/spree/rich_text_helper')
+else
+  # Only to compare this gem's presenter against core's, field for field.
+  require File.join(spree_core_root, 'app/presenters/spree/search_provider/product_presenter')
+end
 require File.join(spree_core_root, 'app/models/spree/search_provider/database')
 
-Dir[File.join(__dir__, '..', 'app/models/**/*.rb')].sort.each { |f| require f }
+Dir[File.join(__dir__, '..', 'app/{models,presenters}/**/*.rb')].sort.each { |f| require f }
+Dir[File.join(__dir__, 'support/**/*.rb')].sort.each { |f| require f }
+
+# spree_core's engine defines both of these in an initializer, which never runs
+# here. Build them the same way it does. `Spree::Dependencies` starts at core's
+# defaults with nothing overridden, as in a freshly booted app.
+module Spree
+  Dependencies = Spree::Core::Dependencies.new unless const_defined?(:Dependencies, false)
+  Deprecation = ActiveSupport::Deprecation.new('6.0', 'Spree') unless const_defined?(:Deprecation, false)
+end
+
+# Any Spree deprecation warning raised while the suite runs fails the example
+# that triggered it. On 6.x that is how the gem proves it never touches
+# Spree::Taxon, #taxons, #metafields, #metafield_schema or
+# #variants_including_master.
+Spree::Deprecation.behavior = :raise
 
 # No ActiveRecord in this suite, so `Spree::Product` (normally an AR model
 # from spree_core's own autoload paths) never gets defined. The provider only
@@ -42,14 +68,20 @@ module Spree
     end
   end
 
-  class Taxon
+  # The category model is Spree::Taxon on 5.x and Spree::Category on 6.x. Only
+  # the one the version under test has is defined, so a stray reference to
+  # Spree::Taxon on 6.x fails with NameError instead of passing silently.
+  category = Class.new do
     def self.decode_prefixed_id(prefixed_id_string)
       return nil if prefixed_id_string.to_s.empty?
 
       prefixed_id_string.to_s.split('_', 2).last
     end
   end
+  const_set(SpreeTypesense.spree_6? ? :Category : :Taxon, category)
 end
+
+def category_class = SpreeTypesense.category_class
 
 # The subset of ActiveRecord::Relation the facet builders actually call.
 # `preload_associations_lazily` comes from ar_lazy_preload (a spree_core
@@ -77,9 +109,7 @@ FakeOptionValue = Struct.new(
   keyword_init: true
 )
 
-FakeTaxon = Struct.new(:id, :prefixed_id, :name, :permalink, keyword_init: true)
-
-# Stub `Spree::OptionValue.where(id:)` / `Spree::Taxon.where(id:)` to return the
+# Stub `Spree::OptionValue.where(id:)` / `category_class.where(id:)` to return the
 # subset of `records` whose ids were asked for — the same filtering the real
 # query would do, so a builder that ignores the id list cannot pass silently.
 def stub_ar_lookup(klass, records)

@@ -268,11 +268,11 @@ end
 
 RSpec.describe Spree::SearchProvider::Typesense::Facets, '.category_facet' do
   let(:records) do
-    [FakeTaxon.new(id: 'a', prefixed_id: 'tax_a', name: 'Shirts', permalink: 'cat/shirts'),
-     FakeTaxon.new(id: 'b', prefixed_id: 'tax_b', name: 'Shoes', permalink: 'cat/shoes')]
+    [FakeCatalog::Category.new(id: 'a', prefixed_id: 'tax_a', names: 'Shirts', permalink: 'cat/shirts'),
+     FakeCatalog::Category.new(id: 'b', prefixed_id: 'tax_b', names: 'Shoes', permalink: 'cat/shoes')]
   end
 
-  before { stub_ar_lookup(Spree::Taxon, records) }
+  before { stub_ar_lookup(category_class, records) }
 
   subject(:facet) { described_class.category_facet('tax_a' => 4, 'tax_b' => 2) }
 
@@ -303,7 +303,8 @@ RSpec.describe Spree::SearchProvider::Typesense::Facets, '.build' do
                                                                          label: 'Colour', kind: 'color'),
                                          image: FakeImage.new(attached: false))
                    ])
-    stub_ar_lookup(Spree::Taxon, [FakeTaxon.new(id: 'a', prefixed_id: 'tax_a', name: 'Shirts', permalink: 'shirts')])
+    stub_ar_lookup(category_class,
+                   [FakeCatalog::Category.new(id: 'a', prefixed_id: 'tax_a', names: 'Shirts', permalink: 'shirts')])
   end
 
   it 'appends option and category facets after the 6a price/availability facets' do

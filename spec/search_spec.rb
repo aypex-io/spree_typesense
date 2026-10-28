@@ -59,4 +59,37 @@ RSpec.describe Spree::SearchProvider::Typesense, '#search_and_filter' do
 
     expect(result.products.map(&:prefixed_id)).to eq(%w[prod_1])
   end
+
+  # Spree 6.0 whitelists in_collection; a collection listing must not return
+  # the whole catalogue, nor count or facet it.
+  context 'filtering by collection on Spree 6.x', if: SpreeTypesense.spree_6? do
+    before do
+      provider.index_batch([
+        doc('prod_4', name: 'Tongkat Ali Tea', price: 20.0).merge('collection_ids' => %w[coll_summer]),
+        doc('prod_5', name: 'Tongkat Ali Gummies', price: 30.0).merge('collection_ids' => %w[coll_summer coll_new])
+      ])
+    end
+
+    let(:scope) { FakeScope.new(%w[prod_1 prod_2 prod_4 prod_5]) }
+
+    it 'returns and counts only the products in that collection' do
+      result = provider.search_and_filter(scope: scope, filters: { in_collection: 'coll_summer' }, sort: 'price')
+
+      expect(result.products.map(&:prefixed_id)).to eq(%w[prod_4 prod_5])
+      expect(result.total_count).to eq(2)
+    end
+
+    it 'combines with a query' do
+      result = provider.search_and_filter(scope: scope, query: 'gummies', filters: { in_collection: 'coll_summer' })
+
+      expect(result.products.map(&:prefixed_id)).to eq(%w[prod_5])
+    end
+
+    it 'limits the facets and their total to the collection' do
+      filters = provider.filters(scope: scope, filters: { in_collection: 'coll_new' })
+
+      expect(filters.total_count).to eq(1)
+      expect(filters.filters.find { |f| f[:id] == 'price' }).to include(min: 30.0, max: 30.0)
+    end
+  end
 end

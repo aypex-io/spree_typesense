@@ -43,7 +43,15 @@ RSpec.describe Spree::SearchProvider::Typesense::Schema do
       option_value_ids option_values tags units_sold_count
       available_on created_at updated_at
     ]
-    expect(definition[:fields].map { |f| f[:name] }).to match_array(expected + %w[preorder available_on_i])
+    expect(definition[:fields].map { |f| f[:name] })
+      .to match_array(expected + %w[preorder collection_ids available_on_i])
+  end
+
+  # Emitted on Spree 6.x only, for the in_collection filter. Filtering needs no
+  # facet, and collection facets are not offered.
+  it 'declares collection_ids as an optional, filterable string array' do
+    expect(field('collection_ids')).to include(type: 'string[]', optional: true, facet: false)
+    expect(described_class::FACET_FIELDS).not_to include('collection_ids')
   end
 
   it 'declares no field the presenter does not emit' do

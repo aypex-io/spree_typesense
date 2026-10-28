@@ -84,6 +84,22 @@ RSpec.describe Spree::SearchProvider::Typesense::QueryBuilder do
       expect(out.first).to eq('category_ids:=[tax_a,tax_b]')
     end
 
+    context 'on Spree 6.x', if: SpreeTypesense.spree_6? do
+      it 'filters by collection using collection_ids' do
+        expect(described_class.user_conditions(in_collection: 'coll_x')).to eq(['collection_ids:=coll_x'])
+      end
+
+      it 'drops a collection id that is not a well-formed prefixed id' do
+        expect(described_class.user_conditions(in_collection: 'coll_x || collection_ids:=coll_y')).to be_empty
+      end
+    end
+
+    context 'on Spree 5.x', unless: SpreeTypesense.spree_6? do
+      it 'ignores in_collection, as before: 5.x has no collections' do
+        expect(described_class.user_conditions(in_collection: 'coll_x')).to be_empty
+      end
+    end
+
     it 'ignores with_option_value_ids (handled by grouped conditions)' do
       expect(described_class.user_conditions(with_option_value_ids: %w[ov_a])).to be_empty
     end

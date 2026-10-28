@@ -6,11 +6,13 @@ module Spree
       # Spree 5.6's Spree::Api::V3::ProductFilterSortOptionSerializer declares
       # `attributes :id, :label` and raises KeyError when :label is absent.
       # Spree 5.5 only read :id, so the extra key is harmless there — this one
-      # shape satisfies both, which the gemspec range (>= 5.5, < 6.0) requires.
+      # shape satisfies both, and 6.0 reads the same keys, which the gemspec
+      # range (>= 5.5, < 7.0) requires.
       #
       # NOTE: 5.6 also appends metafield-driven sort options
-      # (`metafield_schema.sort_options`). We do not yet surface those, so a
-      # store using metafield sorts will not see them under this provider.
+      # (`metafield_schema.sort_options`), and 6.0 custom-field ones
+      # (`custom_field_schema.sort_options`). We do not yet surface those, so a
+      # store using custom-field sorts will not see them under this provider.
       def sort_options_payload
         AVAILABLE_SORT_OPTIONS.map { |id| { id: id, label: nil } }
       end
@@ -83,7 +85,7 @@ module Spree
         search_with_typesense(scope: scope, query: query, filters: filters, sort: sort, page: page, limit: limit)
       rescue Faraday::ConnectionFailed, Errno::ECONNREFUSED => e
         Rails.logger.error { "[spree_typesense] unreachable, degrading to Database provider: #{e.message}" }
-        Spree::SearchProvider::Database.new(store).search_and_filter(
+        fallback_provider.search_and_filter(
           scope: scope, query: query, filters: filters, sort: sort, page: page, limit: limit
         )
       end
@@ -396,9 +398,32 @@ module Spree
         Pagy::Offset.new(count: count, page: page, limit: limit)
       end
 
+      # On 6.x the Database provider takes the same `audience:` as this one, and
+      # uses it for its query and ransack authorisation, so a back-office search
+      # (audience: nil) must not degrade into a storefront one. 5.x providers
+      # take the store only.
+      def fallback_provider
+        if SpreeTypesense.spree_6?
+          Spree::SearchProvider::Database.new(store, audience: audience)
+        else
+          Spree::SearchProvider::Database.new(store)
+        end
+      end
+
+      # The gem's own presenter on every version, unless the application named
+      # a subclass of it. 6.0 core configures none (`search_product_presenter:
+      # nil`), and on 5.x core's default would tie the documents to whichever
+      # presenter core shipped. `overridden?` tells an application's choice
+      # apart from core's default without referencing core's 5.x presenter
+      # constant, which on 6.0 goes through a deprecation shim. On 6.x the
+      # engine registers ours, which also counts as overridden.
+      #
+      # The setting is shared by every installed search gem, so anything that is
+      # not ours is ignored: with spree_meilisearch installed it may hold
+      # Meilisearch's presenter, whose documents this schema does not describe.
       def presenter_class
-        # Configurable dependency, exactly as the Meilisearch provider resolves it.
-        Spree::Dependencies.search_product_presenter_class
+        configured = Spree::Dependencies.search_product_presenter_class if Spree::Dependencies.overridden?(:search_product_presenter)
+        configured.is_a?(Class) && configured <= SpreeTypesense::ProductPresenter ? configured : SpreeTypesense::ProductPresenter
       end
 
       # `remove_by_id` is public and reached via Spree's RemoveJob (ActiveJob

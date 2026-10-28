@@ -2,7 +2,12 @@ module Spree
   module SearchProvider
     class Typesense < Base
       module Schema
-        # Transcribed from spree_core ProductPresenter#build_document.
+        # Transcribed from SpreeTypesense::ProductPresenter#build_document (a
+        # port of spree_core 5.6.1's, which 6.0 removed from core). Every
+        # supported Spree version emits the same named fields, plus
+        # `collection_ids` on 6.x; only their sources differ. `cf_*` keys are
+        # dynamic and left undeclared — Typesense stores them without indexing
+        # them, so they can be neither searched, filtered nor sorted on.
         # Do not add fields the presenter does not emit.
         SEARCHABLE_FIELDS = %w[name description sku option_values category_names tags].freeze
 
@@ -46,6 +51,10 @@ module Spree
 
               { name: 'category_ids',   type: 'string[]', facet: true, optional: true },
               { name: 'category_names', type: 'string[]', facet: false, optional: true },
+              # Spree 6.x only, for the in_collection filter. Typesense filters
+              # on any indexed field, so no facet: collection facets are not
+              # offered. Optional because 5.x documents never carry it.
+              { name: 'collection_ids', type: 'string[]', facet: false, optional: true },
 
               { name: 'option_type_ids',   type: 'string[]', facet: false, optional: true },
               { name: 'option_type_names', type: 'string[]', facet: false, optional: true },
@@ -68,10 +77,10 @@ module Spree
               # NOT EXISTS / IS NULL three-way clause.
               { name: 'available_on_i', type: 'int64', facet: false },
 
-              # spree_core 5.5.1 (what TKF runs, and what this gem develops
-              # against) does NOT emit this field. spree_core 5.6+ does
-              # (product.preorder?). Declared optional so the collection
-              # stays valid whichever version's documents arrive.
+              # Not emitted on spree_core 5.5.x, whose products have no
+              # preorder?. Emitted on 5.6+ and 6.x (product.preorder?).
+              # Declared optional so the collection stays valid whichever
+              # version's documents arrive.
               { name: 'preorder', type: 'bool', facet: true, optional: true }
             ]
           }
