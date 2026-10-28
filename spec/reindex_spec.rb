@@ -16,11 +16,11 @@ RSpec.describe Spree::SearchProvider::Typesense, '#reindex' do
   end
 
   def stub_presenter_for(products)
-    presenter_class = class_double('Spree::SearchProvider::ProductPresenter')
+    presenter_class = class_double('SpreeTypesense::ProductPresenter')
     allow(provider).to receive(:presenter_class).and_return(presenter_class)
     products.each do |p|
       allow(presenter_class).to receive(:new).with(p, store)
-                                              .and_return(instance_double(Spree::SearchProvider::ProductPresenter,
+                                              .and_return(instance_double(SpreeTypesense::ProductPresenter,
                                                                            call: [doc_for(p.id)]))
     end
   end
@@ -69,10 +69,10 @@ RSpec.describe Spree::SearchProvider::Typesense, '#reindex' do
 
   it 'skips a batch that produces no documents' do
     products = [product(5)]
-    presenter_class = class_double('Spree::SearchProvider::ProductPresenter')
+    presenter_class = class_double('SpreeTypesense::ProductPresenter')
     allow(provider).to receive(:presenter_class).and_return(presenter_class)
     allow(presenter_class).to receive(:new).with(products.first, store)
-                                            .and_return(instance_double(Spree::SearchProvider::ProductPresenter, call: []))
+                                            .and_return(instance_double(SpreeTypesense::ProductPresenter, call: []))
     allow(store).to receive(:products).and_return(relation)
     allow(relation).to receive(:find_in_batches).with(batch_size: 500).and_yield(products)
 

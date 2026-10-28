@@ -6,11 +6,13 @@ module Spree
       # Spree 5.6's Spree::Api::V3::ProductFilterSortOptionSerializer declares
       # `attributes :id, :label` and raises KeyError when :label is absent.
       # Spree 5.5 only read :id, so the extra key is harmless there — this one
-      # shape satisfies both, which the gemspec range (>= 5.5, < 6.0) requires.
+      # shape satisfies both, and 6.0 reads the same keys, which the gemspec
+      # range (>= 5.5, < 7.0) requires.
       #
       # NOTE: 5.6 also appends metafield-driven sort options
-      # (`metafield_schema.sort_options`). We do not yet surface those, so a
-      # store using metafield sorts will not see them under this provider.
+      # (`metafield_schema.sort_options`), and 6.0 custom-field ones
+      # (`custom_field_schema.sort_options`). We do not yet surface those, so a
+      # store using custom-field sorts will not see them under this provider.
       def sort_options_payload
         AVAILABLE_SORT_OPTIONS.map { |id| { id: id, label: nil } }
       end
@@ -396,9 +398,19 @@ module Spree
         Pagy::Offset.new(count: count, page: page, limit: limit)
       end
 
+      # The gem's own presenter on every version, unless the application named
+      # one. 6.0 core configures none (`search_product_presenter: nil`), and on
+      # 5.x core's default would tie the documents to whichever presenter core
+      # shipped. `overridden?` tells an application's choice apart from core's
+      # default without referencing core's 5.x presenter constant, which on 6.0
+      # goes through a deprecation shim. On 6.x the engine registers ours, which
+      # also counts as overridden and resolves to the same class.
       def presenter_class
-        # Configurable dependency, exactly as the Meilisearch provider resolves it.
-        Spree::Dependencies.search_product_presenter_class
+        if Spree::Dependencies.overridden?(:search_product_presenter)
+          Spree::Dependencies.search_product_presenter_class
+        else
+          SpreeTypesense::ProductPresenter
+        end
       end
 
       # `remove_by_id` is public and reached via Spree's RemoveJob (ActiveJob
