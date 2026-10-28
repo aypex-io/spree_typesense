@@ -99,9 +99,9 @@ option names (to `label`), and adds `collection_ids`, so **reindex after
 upgrading Spree** (`rake spree:search:reindex`). `ensure_index_settings!` never
 alters an existing collection, so one created before this release has no
 `collection_ids` field, and `in_collection` searches against it return nothing
-(the failure is logged): drop the collection before reindexing. Staying on 5.x needs no reindex. Loading and
-using the gem on 6.0 triggers no Spree deprecation warning; the suite raises on
-any.
+(the failure is logged): drop the collection before reindexing. Staying on 5.x
+needs no reindex. Loading and using the gem on 6.0 triggers no Spree
+deprecation warning; the suite raises on any.
 
 ## Local development
 
