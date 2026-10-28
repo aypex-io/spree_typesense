@@ -8,7 +8,7 @@ Gem::Specification.new do |s|
   s.files       = Dir['lib/**/*', 'app/**/*']
   s.required_ruby_version = '>= 3.3'
 
-  s.add_dependency 'spree_core', '>= 5.5', '< 6.0'
+  s.add_dependency 'spree_core', '>= 5.5', '< 7.0'
   s.add_dependency 'typesense', '~> 5.0'
 
   s.add_development_dependency 'rspec', '~> 3.13'

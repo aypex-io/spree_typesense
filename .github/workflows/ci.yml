@@ -7,10 +7,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The gemspec claims spree_core >= 5.5, < 6.0 — test both ends of it.
+        # The gemspec claims spree_core >= 5.5, < 7.0 — test each minor in it.
         # 5.5.1 is what the consuming application runs; 5.6.x emits an extra
         # `preorder` field, which is why the schema declares it optional.
-        spree_core: ['5.5.1', '5.6.1']
+        # 6.0 ships no core presenter and renames the document's sources
+        # (categories, `label`, custom fields), so it gets its own leg.
+        spree_core: ['5.5.1', '5.6.1', '6.0.0']
     name: spec (spree_core ${{ matrix.spree_core }})
     services:
       typesense:
