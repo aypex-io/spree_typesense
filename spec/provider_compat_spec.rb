@@ -57,6 +57,20 @@ RSpec.describe Spree::SearchProvider::Typesense, 'across Spree versions' do
     end
   end
 
+  # Asked per document and per option value while reindexing.
+  describe 'SpreeTypesense.spree_6?' do
+    it 'parses the Spree version once, not on every call' do
+      SpreeTypesense.spree_6?
+      allow(Spree).to receive(:version).and_call_original
+      allow(Gem::Version).to receive(:new).and_call_original
+
+      3.times { SpreeTypesense.spree_6? }
+
+      expect(Spree).not_to have_received(:version)
+      expect(Gem::Version).not_to have_received(:new)
+    end
+  end
+
   describe 'SpreeTypesense.register_search_product_presenter!' do
     context 'on Spree 6.x', if: SpreeTypesense.spree_6? do
       it 'starts from core shipping no presenter' do

@@ -8,8 +8,11 @@ module SpreeTypesense
 
   module_function
 
+  # Memoised, as is spree_6?: the installed spree_core cannot change while the
+  # process runs, and spree_6? is asked per document and per option value on
+  # the reindex path.
   def spree_version
-    Gem::Version.new(Spree.version)
+    @spree_version ||= Gem::Version.new(Spree.version)
   end
 
   # The one place the 5.x / 6.x split is decided. Spree 6.0 renamed taxons to
@@ -17,7 +20,9 @@ module SpreeTypesense
   # dropped the search document presenter from core. Each use of this predicate
   # sits where one of those renames forces different code.
   def spree_6?
-    spree_version >= Gem::Version.new('6.0.0.a')
+    return @spree_6 if defined?(@spree_6)
+
+    @spree_6 = spree_version >= Gem::Version.new('6.0.0.a')
   end
 
   # Spree 6.0 keeps `Spree::Taxon` only as a deprecated alias that warns the
