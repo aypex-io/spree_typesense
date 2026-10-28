@@ -18,16 +18,16 @@ RSpec.describe SpreeTypesense::ProductPresenter do
   let(:sale) { FakeCatalog::Category.new(prefixed_id: "#{category_prefix}_sale", names: { 'en' => 'Sale' }, parent: apparel) }
 
   let(:red) do
-    FakeCatalog::OptionValue.new(prefixed_id: 'optv_red', presentations: { 'en' => 'Red (presentation)' },
-                                 labels: { 'en' => 'Red', 'de' => 'Rot' })
+    FakeCatalog::Option.new(prefixed_id: 'optv_red', presentations: { 'en' => 'Red (presentation)' },
+                            labels: { 'en' => 'Red', 'de' => 'Rot' })
   end
   let(:large) do
-    FakeCatalog::OptionValue.new(prefixed_id: 'optv_large', presentations: { 'en' => 'L (presentation)' },
-                                 labels: { 'en' => 'Large' })
+    FakeCatalog::Option.new(prefixed_id: 'optv_large', presentations: { 'en' => 'L (presentation)' },
+                            labels: { 'en' => 'Large' })
   end
   let(:colour) do
-    FakeCatalog::OptionType.new(prefixed_id: 'opt_colour', presentations: { 'en' => 'Colour (presentation)' },
-                                labels: { 'en' => 'Colour', 'de' => 'Farbe' })
+    FakeCatalog::Option.new(prefixed_id: 'opt_colour', presentations: { 'en' => 'Colour (presentation)' },
+                            labels: { 'en' => 'Colour', 'de' => 'Farbe' })
   end
 
   def custom_field(key, value, field_type: 'short_text', searchable: true, sortable: false, storefront_visible: true)

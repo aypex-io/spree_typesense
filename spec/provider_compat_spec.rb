@@ -148,7 +148,9 @@ RSpec.describe Spree::SearchProvider::Typesense, 'across Spree versions' do
   describe 'Spree deprecations', if: SpreeTypesense.spree_6? do
     let(:provider) { described_class.new(store) }
     let(:collection) { provider.client.collections[provider.collection_name] }
-    let(:shirts) { FakeCatalog::Category.new(prefixed_id: 'ctg_shirts', names: { 'en' => 'Shirts' }) }
+    let(:shirts) do
+      FakeCatalog::Category.new(id: 'shirts', prefixed_id: 'ctg_shirts', names: { 'en' => 'Shirts' }, permalink: 'shirts')
+    end
     let(:product) do
       FakeCatalog::Product.new(prefixed_id: 'prod_dep', names: { 'en' => 'Deprecation-free' },
                                descriptions: { 'en' => '<p>Plain</p>' }, prices: { 'USD' => 5 },
@@ -167,8 +169,7 @@ RSpec.describe Spree::SearchProvider::Typesense, 'across Spree versions' do
       collection.delete rescue nil
       allow(provider).to receive(:locale).and_return('en')
       allow(provider).to receive(:currency).and_return('USD')
-      stub_ar_lookup(Spree::Category, [FakeTaxon.new(id: 'shirts', prefixed_id: 'ctg_shirts', name: 'Shirts',
-                                                     permalink: 'shirts')])
+      stub_ar_lookup(Spree::Category, [shirts])
     end
 
     it 'are never triggered by registering, indexing, searching, filtering or faceting' do

@@ -109,8 +109,6 @@ FakeOptionValue = Struct.new(
   keyword_init: true
 )
 
-FakeTaxon = Struct.new(:id, :prefixed_id, :name, :permalink, keyword_init: true)
-
 # Stub `Spree::OptionValue.where(id:)` / `category_class.where(id:)` to return the
 # subset of `records` whose ids were asked for — the same filtering the real
 # query would do, so a builder that ignores the id list cannot pass silently.

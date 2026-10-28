@@ -1,6 +1,7 @@
 # Plain-Ruby stand-ins for the catalogue a product presenter reads: product,
 # store, markets, categories, option types and values, variants, publications
-# and custom fields. No ActiveRecord, matching the rest of this suite. Each
+# and custom fields. Categories also stand in for the records the category
+# facet looks up. No ActiveRecord, matching the rest of this suite. Each
 # fake answers only what a presenter calls, so a presenter that starts calling
 # something new fails loudly with NoMethodError instead of passing.
 #
@@ -27,23 +28,19 @@ module FakeCatalog
     end
   end
 
-  Category = Struct.new(:prefixed_id, :names, :parent, keyword_init: true) do
+  # A taxon on 5.x, a category on 6.x. `names` is a plain name, or translations
+  # for the presenter; `id` and `permalink` are what the category facet reads.
+  Category = Struct.new(:id, :prefixed_id, :names, :permalink, :parent, keyword_init: true) do
     include Translated
 
     def name(locale: nil) = translate(names, locale)
     def self_and_ancestors = [*parent&.self_and_ancestors, self]
   end
 
-  # `presentation` is the 5.x name, `label` the 6.0 one. Fakes carry different
-  # values in each so a presenter reading the wrong one is caught.
-  OptionType = Struct.new(:prefixed_id, :presentations, :labels, keyword_init: true) do
-    include Translated
-
-    def presentation(locale: nil) = translate(presentations, locale)
-    def label(locale: nil) = translate(labels, locale)
-  end
-
-  OptionValue = Struct.new(:prefixed_id, :presentations, :labels, keyword_init: true) do
+  # An option type or an option value: the presenter reads the same two names
+  # off both. `presentation` is the 5.x name, `label` the 6.0 one. Fakes carry
+  # different values in each so a presenter reading the wrong one is caught.
+  Option = Struct.new(:prefixed_id, :presentations, :labels, keyword_init: true) do
     include Translated
 
     def presentation(locale: nil) = translate(presentations, locale)
