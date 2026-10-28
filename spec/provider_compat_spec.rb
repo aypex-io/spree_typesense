@@ -51,7 +51,17 @@ RSpec.describe Spree::SearchProvider::Typesense, 'across Spree versions' do
     end
 
     it "is the gem's own presenter after the engine registered it" do
+      allow(Spree).to receive(:search_provider).and_return('Spree::SearchProvider::Typesense')
       SpreeTypesense.register_search_product_presenter!
+
+      expect(provider.send(:presenter_class)).to be(SpreeTypesense::ProductPresenter)
+    end
+
+    # The setting is shared with any other search gem, such as
+    # spree_meilisearch, whose documents this collection does not describe.
+    it "is the gem's own presenter when the setting holds a presenter that is not ours" do
+      other_presenter = Class.new
+      dependencies.search_product_presenter = other_presenter
 
       expect(provider.send(:presenter_class)).to be(SpreeTypesense::ProductPresenter)
     end
@@ -72,6 +82,8 @@ RSpec.describe Spree::SearchProvider::Typesense, 'across Spree versions' do
   end
 
   describe 'SpreeTypesense.register_search_product_presenter!' do
+    before { allow(Spree).to receive(:search_provider).and_return('Spree::SearchProvider::Typesense') }
+
     context 'on Spree 6.x', if: SpreeTypesense.spree_6? do
       it 'starts from core shipping no presenter' do
         expect(dependencies.search_product_presenter).to be_nil
@@ -84,12 +96,40 @@ RSpec.describe Spree::SearchProvider::Typesense, 'across Spree versions' do
         expect(dependencies.search_product_presenter_class).to be(SpreeTypesense::ProductPresenter)
       end
 
+      it 'registers it when a subclass of the Typesense provider is selected' do
+        stub_const('MyApp::SearchProvider', Class.new(described_class))
+        allow(Spree).to receive(:search_provider).and_return('MyApp::SearchProvider')
+
+        SpreeTypesense.register_search_product_presenter!
+
+        expect(dependencies.search_product_presenter).to eq('SpreeTypesense::ProductPresenter')
+      end
+
       it "leaves the application's own presenter alone" do
         dependencies.search_product_presenter = 'MyApp::ProductPresenter'
 
         SpreeTypesense.register_search_product_presenter!
 
         expect(dependencies.search_product_presenter).to eq('MyApp::ProductPresenter')
+      end
+
+      it "leaves another search gem's registration alone" do
+        dependencies.search_product_presenter = 'SpreeMeilisearch::ProductPresenter'
+
+        SpreeTypesense.register_search_product_presenter!
+
+        expect(dependencies.search_product_presenter).to eq('SpreeMeilisearch::ProductPresenter')
+      end
+
+      # Otherwise spree_meilisearch, registering after us, would find the
+      # setting taken and index with our documents.
+      it 'registers nothing when another search provider is selected' do
+        allow(Spree).to receive(:search_provider).and_return('Spree::SearchProvider::Database')
+
+        SpreeTypesense.register_search_product_presenter!
+
+        expect(dependencies.overridden?(:search_product_presenter)).to be(false)
+        expect(dependencies.search_product_presenter).to be_nil
       end
     end
 
@@ -123,6 +163,7 @@ RSpec.describe Spree::SearchProvider::Typesense, 'across Spree versions' do
 
     before do
       allow(Spree::Deprecation).to receive(:warn).and_call_original
+      allow(Spree).to receive(:search_provider).and_return('Spree::SearchProvider::Typesense')
       collection.delete rescue nil
       allow(provider).to receive(:locale).and_return('en')
       allow(provider).to receive(:currency).and_return('USD')

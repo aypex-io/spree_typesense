@@ -411,18 +411,19 @@ module Spree
       end
 
       # The gem's own presenter on every version, unless the application named
-      # one. 6.0 core configures none (`search_product_presenter: nil`), and on
-      # 5.x core's default would tie the documents to whichever presenter core
-      # shipped. `overridden?` tells an application's choice apart from core's
-      # default without referencing core's 5.x presenter constant, which on 6.0
-      # goes through a deprecation shim. On 6.x the engine registers ours, which
-      # also counts as overridden and resolves to the same class.
+      # a subclass of it. 6.0 core configures none (`search_product_presenter:
+      # nil`), and on 5.x core's default would tie the documents to whichever
+      # presenter core shipped. `overridden?` tells an application's choice
+      # apart from core's default without referencing core's 5.x presenter
+      # constant, which on 6.0 goes through a deprecation shim. On 6.x the
+      # engine registers ours, which also counts as overridden.
+      #
+      # The setting is shared by every installed search gem, so anything that is
+      # not ours is ignored: with spree_meilisearch installed it may hold
+      # Meilisearch's presenter, whose documents this schema does not describe.
       def presenter_class
-        if Spree::Dependencies.overridden?(:search_product_presenter)
-          Spree::Dependencies.search_product_presenter_class
-        else
-          SpreeTypesense::ProductPresenter
-        end
+        configured = Spree::Dependencies.search_product_presenter_class if Spree::Dependencies.overridden?(:search_product_presenter)
+        configured.is_a?(Class) && configured <= SpreeTypesense::ProductPresenter ? configured : SpreeTypesense::ProductPresenter
       end
 
       # `remove_by_id` is public and reached via Spree's RemoveJob (ActiveJob

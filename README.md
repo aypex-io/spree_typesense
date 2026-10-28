@@ -44,17 +44,25 @@ happens to ship. On 5.x its documents are exactly those of core's
 `Spree::SearchProvider::ProductPresenter` for that release
 (`spec/product_presenter_spec.rb` compares the two field for field): 5.5.x
 emits no `preorder`, 5.6.0 adds it, and 5.6.1 adds `cf_*` keys for searchable
-or sortable metafields. An application that sets
-`Spree::Dependencies.search_product_presenter` itself keeps its own presenter.
+or sortable metafields.
+
+An application can set `Spree::Dependencies.search_product_presenter` to a
+subclass of `SpreeTypesense::ProductPresenter`, and the provider indexes with
+it. Any other presenter there is ignored and the gem's own is used: the
+setting is shared by every installed search gem, and another gem's documents
+(`spree_meilisearch`'s, say) do not fit this collection's schema.
 
 Spree 6.0 changed what the documents are built from. The gem follows it, and
 emits the same fields as on 5.6:
 
 - **Core ships no search presenter** (`search_product_presenter: nil`). At boot
   the engine registers `SpreeTypesense::ProductPresenter` as
-  `Spree::Dependencies.search_product_presenter`, unless the application already
-  set one — the same pattern as `spree_meilisearch`. If `spree_meilisearch` is
-  installed alongside, whichever engine registers first wins.
+  `Spree::Dependencies.search_product_presenter`, unless the application or
+  another search gem already set one — the same pattern as `spree_meilisearch`.
+  It registers only when Typesense is the selected `Spree.search_provider`, so
+  with `spree_meilisearch` installed alongside, each gem's presenter goes with
+  its own provider. Either way the provider indexes with this gem's presenter
+  (see above).
 - **`Spree::Taxon` became `Spree::Category`**, with `ctg_` prefixed ids.
   `category_ids` and `category_names` come from `product.categories`, and the
   category facet looks up `Spree::Category`. `Spree::Taxon` is a deprecated
