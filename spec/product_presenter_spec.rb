@@ -147,11 +147,11 @@ RSpec.describe SpreeTypesense::ProductPresenter do
     end
 
     it 'emits preorder from 5.6.0, as core does' do
-      expect(document('en', 'USD').key?(:preorder)).to eq(SpreeTypesense.spree_version >= Gem::Version.new('5.6.0'))
+      expect(document('en', 'USD').key?(:preorder)).to eq(FakeCatalog.since?(FakeCatalog::PREORDER_SINCE))
     end
 
     it 'emits searchable or sortable metafields from 5.6.1, as core does, regardless of visibility' do
-      expected = if SpreeTypesense.spree_version >= Gem::Version.new('5.6.1')
+      expected = if FakeCatalog.since?(FakeCatalog::METAFIELD_SEARCH_SINCE)
                    { 'cf_material' => 'Cotton', 'cf_weight' => 250.0, 'cf_supplier_code' => 'SUP-1' }
                  else
                    {}

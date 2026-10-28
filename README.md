@@ -44,7 +44,9 @@ happens to ship. On 5.x its documents are exactly those of core's
 `Spree::SearchProvider::ProductPresenter` for that release
 (`spec/product_presenter_spec.rb` compares the two field for field): 5.5.x
 emits no `preorder`, 5.6.0 adds it, and 5.6.1 adds `cf_*` keys for searchable
-or sortable metafields.
+or sortable metafields. The presenter follows the capabilities core's models
+gained in those releases (`Product#preorder?`, the metafield definition's
+`searchable?`) rather than the patch version.
 
 An application can set `Spree::Dependencies.search_product_presenter` to a
 subclass of `SpreeTypesense::ProductPresenter`, and the provider indexes with

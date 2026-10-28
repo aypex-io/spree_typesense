@@ -28,6 +28,17 @@ module FakeCatalog
     end
   end
 
+  # The spree_core release whose models gained what the presenter checks for
+  # with `respond_to?`. The fakes answer those calls from the same release, so
+  # they look like core's models for the version under test. Core's own
+  # presenter is the check on both: on 5.6.1 it calls `preorder?` and
+  # `searchable?`, and on 5.5.1 our presenter would emit what core's does not,
+  # so the parity spec fails if either boundary is wrong.
+  PREORDER_SINCE = Gem::Version.new('5.6.0')
+  METAFIELD_SEARCH_SINCE = Gem::Version.new('5.6.1')
+
+  def self.since?(version) = SpreeTypesense.spree_version >= version
+
   # A taxon on 5.x, a category on 6.x. `names` is a plain name, or translations
   # for the presenter; `id` and `permalink` are what the category facet reads.
   Category = Struct.new(:id, :prefixed_id, :names, :permalink, :parent, keyword_init: true) do
@@ -53,8 +64,12 @@ module FakeCatalog
 
   CustomFieldDefinition = Struct.new(:filter_key, :field_type, :searchable, :sortable, :storefront_visible,
                                      keyword_init: true) do
-    def searchable? = !!searchable
-    def sortable? = !!sortable
+    # Metafield definitions before 5.6.1 have no search capabilities.
+    if FakeCatalog.since?(METAFIELD_SEARCH_SINCE)
+      def searchable? = !!searchable
+      def sortable? = !!sortable
+    end
+
     def storefront_visible? = !!storefront_visible
   end
 
@@ -131,7 +146,11 @@ module FakeCatalog
     def compare_at_amount_in(currency) = @compare_at[currency]
 
     def in_stock? = @in_stock
-    def preorder? = @preorder
+
+    # Spree 5.5 products have no preorder?.
+    if FakeCatalog.since?(PREORDER_SINCE)
+      def preorder? = @preorder
+    end
 
     def categories = @categories
     def variants = @variants

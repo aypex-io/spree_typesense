@@ -13,6 +13,9 @@ module SpreeTypesense
   #   - 5.5.x  no `preorder`, no `cf_*` keys
   #   - 5.6.0  adds `preorder`
   #   - 5.6.1  adds `cf_*` from searchable/sortable metafields
+  # Each step came with a capability core's models gained in the same release
+  # (Product#preorder?, the metafield definition's search capabilities), so
+  # this class checks for the capability rather than the patch version.
   # On 6.0 the same fields come from 6.0's sources, as in spree_meilisearch
   # 6.0's presenter: categories, `label`, storefront-visible custom fields and a
   # plain-text description. Those sources sit behind the private seams below.
@@ -20,9 +23,6 @@ module SpreeTypesense
   # Left out on purpose (later work): membership documents for manual sort,
   # `collection_ids` and `option_value_combination_ids`.
   class ProductPresenter
-    PREORDER_SINCE = Gem::Version.new('5.6.0')
-    METAFIELDS_SINCE = Gem::Version.new('5.6.1')
-
     attr_reader :product, :store
 
     def initialize(product, store)
@@ -80,8 +80,8 @@ module SpreeTypesense
       }
       # True when the product has an active pre-order variant, so a scheduled
       # (future-published) launch still surfaces in search. Core added it in
-      # 5.6.0; 5.5.x products have no `preorder?`.
-      document[:preorder] = product.preorder? if emits_preorder?
+      # 5.6.0, with Product#preorder?; 5.5.x products have no `preorder?`.
+      document[:preorder] = product.preorder? if product.respond_to?(:preorder?)
       document.merge!(
         store_ids: Array(product.store_id).map(&:to_s),
         channel_ids: channel_ids_for_store,
@@ -99,10 +99,6 @@ module SpreeTypesense
         updated_at: product.updated_at&.iso8601
       )
       document.merge(custom_field_document_attributes)
-    end
-
-    def emits_preorder?
-      SpreeTypesense.spree_version >= PREORDER_SINCE
     end
 
     # --- 5.x / 6.0 source seams -------------------------------------------
@@ -133,8 +129,9 @@ module SpreeTypesense
     # Flat cf_* hash for searchable ∪ sortable custom fields (Meilisearch docs).
     # 6.0: custom fields, storefront-visible ones only — the index is the
     # storefront's, and a value the serializer withholds has no business in a
-    # document it can search. 5.6.1: metafields, as core emitted them. Earlier
-    # 5.x emitted none.
+    # document it can search. 5.x: metafields, as core emitted them, once
+    # metafield definitions have search capabilities (5.6.1). Before that
+    # definitions have no `searchable?`, and core emitted none.
     def custom_field_document_attributes
       @custom_field_document_attributes ||=
         if SpreeTypesense.spree_6?
@@ -144,15 +141,13 @@ module SpreeTypesense
 
             [definition.filter_key, custom_field_index_value(custom_field, definition.field_type)]
           end.to_h
-        elsif SpreeTypesense.spree_version >= METAFIELDS_SINCE
+        else
           product.metafields.filter_map do |metafield|
             definition = metafield.metafield_definition
-            next unless definition&.searchable? || definition&.sortable?
+            next unless definition.respond_to?(:searchable?) && (definition.searchable? || definition.sortable?)
 
             [definition.filter_key, custom_field_index_value(metafield, definition.field_type)]
           end.to_h
-        else
-          {}
         end
     end
 
