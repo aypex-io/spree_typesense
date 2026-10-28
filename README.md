@@ -54,6 +54,10 @@ it. Any other presenter there is ignored and the gem's own is used: the
 setting is shared by every installed search gem, and another gem's documents
 (`spree_meilisearch`'s, say) do not fit this collection's schema.
 
+`cf_*` keys are stored in each document but are not declared in the schema, so
+Typesense does not index them: they cannot be searched, filtered or sorted on.
+That is the same on 5.6.1 and 6.x.
+
 Spree 6.0 changed what the documents are built from. The gem follows it, and
 emits the same fields as on 5.6:
 
@@ -72,8 +76,9 @@ emits the same fields as on 5.6:
 - **Option type and value `presentation` became `label`.**
   `option_type_names` and `option_values` read `label`.
 - **Metafields became custom fields.** `cf_*` keys come from
-  `product.custom_fields`, storefront-visible definitions only, searchable or
-  sortable as before.
+  `product.custom_fields`: definitions that are storefront-visible and marked
+  searchable or sortable. As on 5.6.1 they are stored unindexed, so neither
+  flag makes them searchable or sortable in Typesense.
 - **Products belong to collections, and `in_collection` is a whitelisted
   filter.** Documents carry `collection_ids` (6.x only), and `in_collection`
   filters on it, so a collection listing returns, counts and facets only that

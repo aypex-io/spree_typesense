@@ -7,7 +7,7 @@ module Spree
         # supported Spree version emits the same named fields, plus
         # `collection_ids` on 6.x; only their sources differ. `cf_*` keys are
         # dynamic and left undeclared — Typesense stores them without indexing
-        # them.
+        # them, so they can be neither searched, filtered nor sorted on.
         # Do not add fields the presenter does not emit.
         SEARCHABLE_FIELDS = %w[name description sku option_values category_names tags].freeze
 
