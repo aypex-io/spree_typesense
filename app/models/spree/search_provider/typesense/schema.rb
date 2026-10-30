@@ -85,6 +85,33 @@ module Spree
             ]
           }
         end
+
+        # The fields #definition declares that a live collection lacks, as
+        # their declared definitions, ready to PATCH onto it. A collection
+        # created by an earlier release gains them in place this way.
+        #
+        # @param live_fields [Array<Hash>] the `fields` of a retrieved collection
+        # @return [Array<Hash>]
+        def missing_fields(live_fields)
+          live_names = live_fields.map { |f| f['name'] }
+          declared_fields.reject { |f| live_names.include?(f[:name]) }
+        end
+
+        # Fields the live collection declares with a different type from
+        # #definition. Typesense cannot change a field's type in place, so
+        # these need the collection dropped and rebuilt.
+        #
+        # @param live_fields [Array<Hash>] the `fields` of a retrieved collection
+        # @return [Array<Hash>] `{ name:, live_type:, type: }` per field
+        def type_mismatches(live_fields)
+          live_types = live_fields.to_h { |f| [f['name'], f['type']] }
+          declared_fields.filter_map do |f|
+            live_type = live_types[f[:name]]
+            { name: f[:name], live_type: live_type, type: f[:type] } if live_type && live_type != f[:type]
+          end
+        end
+
+        def declared_fields = definition(nil)[:fields]
       end
     end
   end

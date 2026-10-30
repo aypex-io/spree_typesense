@@ -1,6 +1,27 @@
 module Spree
   module SearchProvider
     class Typesense < Base
+      # Typesense rejected some documents of an import, which it reports per
+      # document rather than as an HTTP error.
+      class ImportError < StandardError
+        # The message names this many ids; #failures keeps them all.
+        MAX_IDS_IN_MESSAGE = 50
+
+        # @return [Array<Hash>] `{ id:, error: }` per rejected document
+        attr_reader :failures
+
+        # @param collection_name [String]
+        # @param failures [Array<Hash>] `{ id:, error: }` per rejected document
+        def initialize(collection_name, failures)
+          @failures = failures
+          ids = failures.map { |f| f[:id] }
+          shown = ids.first(MAX_IDS_IN_MESSAGE).join(', ')
+          more = ids.size > MAX_IDS_IN_MESSAGE ? " and #{ids.size - MAX_IDS_IN_MESSAGE} more" : ''
+          super("#{ids.size} #{ids.size == 1 ? 'document' : 'documents'} rejected by Typesense " \
+                "collection '#{collection_name}': #{shown}#{more}")
+        end
+      end
+
       AVAILABLE_SORT_OPTIONS = %w[price -price name -name -available_on available_on best_selling].freeze
 
       # Spree 5.6's Spree::Api::V3::ProductFilterSortOptionSerializer declares
@@ -22,14 +43,21 @@ module Spree
       # Needed by option/category facets; the price range reads stats instead.
       MAX_FACET_VALUES = 100
 
+      # See #schema_client.
+      SCHEMA_CHANGE_TIMEOUT_SECONDS = 120
+
       def self.indexing_required?
         true
       end
 
+      # Creates the collection, or brings an existing one up to
+      # Schema.definition. Called by #reindex, so the plain
+      # `rake spree:search:reindex` an upgrade runs is enough to add the
+      # fields a newer release declares.
       def ensure_index_settings!
         client.collections.create(Schema.definition(collection_name))
       rescue ::Typesense::Error::ObjectAlreadyExists
-        log_schema_drift_warning
+        update_collection_schema!
         nil
       end
 
@@ -37,35 +65,82 @@ module Spree
       # Spree::Product.where(store_id:)), batch size 500, deterministic order,
       # lazy-preloaded associations. Returns the number of DOCUMENTS indexed
       # (not products — one product can emit N locale x currency documents).
+      #
+      # A batch with rejected documents does not stop the reindex, and those
+      # documents are not counted. Once every batch is sent, an ImportError
+      # names them all, so `rake spree:search:reindex` fails visibly.
+      #
+      # Documents of products deleted since the last reindex are not removed
+      # here: Spree's removal job deletes them as products are destroyed.
       def reindex(scope = nil)
         scope ||= store.products
         ensure_index_settings!
 
         indexed = 0
+        failures = []
         scope.reorder(id: :asc).preload_associations_lazily.find_in_batches(batch_size: 500) do |batch|
           documents = batch.flat_map { |product| presenter_class.new(product, store).call }
           next if documents.empty?
 
-          index_batch(documents)
-          indexed += documents.size
-          Rails.logger.info { "[spree_typesense] indexed #{documents.size} (#{indexed} total) into #{collection_name}" }
+          accepted = documents.size
+          begin
+            index_batch(documents)
+          rescue ImportError => e
+            failures.concat(e.failures)
+            accepted -= e.failures.size
+          end
+          indexed += accepted
+          Rails.logger.info { "[spree_typesense] indexed #{accepted} (#{indexed} total) into #{collection_name}" }
         end
 
-        Rails.logger.info { "[spree_typesense] reindex complete: #{indexed} documents" }
+        Rails.logger.info do
+          "[spree_typesense] reindex complete: #{indexed} documents indexed, #{failures.size} failed"
+        end
+        raise ImportError.new(collection_name, failures) if failures.any?
+
         indexed
       end
 
+      # Upserts the product's documents, then deletes those of its documents
+      # it no longer produces: one product is a document per locale x currency,
+      # and a product that lost a currency's price, say, must not stay
+      # searchable in that market. A product that produces none loses them all.
+      #
+      # Raises ImportError (after the deletion) when Typesense rejects a
+      # document, so the index job retries it.
       def index(product)
-        docs = Array(presenter_class.new(product, store).call)
-        index_batch(docs)
+        documents = Array(presenter_class.new(product, store).call)
+
+        rejected = nil
+        begin
+          results = index_batch(documents)
+        rescue ImportError => e
+          rejected = e
+        end
+
+        remove_stale_documents(product.prefixed_id, documents)
+        raise rejected if rejected
+
+        results
       end
 
+      # Typesense answers an import with HTTP 200 and one result per document,
+      # in order, so a rejected document raises nothing by itself. Each
+      # rejection is logged with its document id, and once the whole batch is
+      # sent an ImportError names them all.
+      #
+      # @return [Array<Hash>, nil] Typesense's per-document results
+      # @raise [ImportError] when Typesense rejected any document
       def index_batch(documents)
         return if documents.blank?
 
-        client.collections[collection_name]
-              .documents
-              .import(documents.map { |d| derive_fields(d) }, action: 'upsert')
+        documents = documents.map { |d| derive_fields(d) }
+        results = client.collections[collection_name].documents.import(documents, action: 'upsert')
+
+        failures = import_failures(documents, results)
+        raise ImportError.new(collection_name, failures) if failures.any?
+
+        results
       end
 
       def remove(product)
@@ -145,14 +220,7 @@ module Spree
       end
 
       def client
-        @client ||= begin
-          uri = URI.parse(ENV.fetch('TYPESENSE_URL'))
-          ::Typesense::Client.new(
-            nodes: [{ host: uri.host, port: uri.port, protocol: uri.scheme }],
-            api_key: ENV.fetch('TYPESENSE_API_KEY'),
-            connection_timeout_seconds: 5
-          )
-        end
+        @client ||= build_client(connection_timeout_seconds: 5)
       end
 
       def collection_name
@@ -160,6 +228,44 @@ module Spree
       end
 
       private
+
+      # The rejected documents of an import, logged one by one. A result names
+      # its document only when the import asked for that, so fall back to the
+      # position: Typesense answers one result per document, in order.
+      def import_failures(documents, results)
+        Array(results).each_with_index.filter_map do |result, index|
+          next if result['success']
+
+          failure = { id: result['id'] || documents.dig(index, 'id'), error: result['error'] }
+          Rails.logger.error do
+            "[spree_typesense] Typesense rejected document #{failure[:id]} in collection " \
+            "'#{collection_name}': #{failure[:error]}"
+          end
+          failure
+        end
+      end
+
+      # Deletes the product's documents other than `documents`; all of them
+      # when `documents` is empty. Ids go into the filter quoted in backticks,
+      # Typesense's string literal, because locales such as `en-US` put a
+      # hyphen in them. An id that itself holds a backtick cannot be quoted, so
+      # nothing is deleted then rather than risk deleting the wrong documents.
+      def remove_stale_documents(prefixed_id, documents)
+        kept_ids = documents.map { |d| (d[:id] || d['id']).to_s }
+        return remove_by_id(prefixed_id) if kept_ids.empty?
+
+        if kept_ids.any? { |id| id.include?('`') }
+          Rails.logger.warn { "[spree_typesense] not removing stale documents of #{prefixed_id}: an id holds a backtick" }
+          return
+        end
+
+        client.collections[collection_name].documents.delete(
+          filter_by: "product_id:=#{sanitize_prefixed_id(prefixed_id)} && " \
+                     "id:!=[#{kept_ids.map { |id| "`#{id}`" }.join(',')}]"
+        )
+      rescue ::Typesense::Error::ObjectNotFound
+        nil
+      end
 
       def execute_search(query:, filters:, sort:, page:, limit:, facet_by: nil)
         base, grouped = build_conditions(filters)
@@ -325,38 +431,53 @@ module Spree
         Rails.error.report(error, handled: true, context: { collection: collection_name, query: query })
       end
 
-      # Typesense has no in-place "alter collection" API — ensure_index_settings!
-      # hitting ObjectAlreadyExists means a schema change in Schema.definition
-      # will NOT reach an already-created collection. Do not auto-drop it here:
-      # that would destroy a live production index. Log loudly instead, with
-      # a field-level diff when it can be computed cheaply, so an operator
-      # sees WHY new/renamed fields aren't queryable rather than discovering
-      # it via a silent no-op.
-      def log_schema_drift_warning
-        live = client.collections[collection_name].retrieve['fields'].map { |f| f['name'] }
-        expected = Schema.definition(collection_name)[:fields].map { |f| f[:name].to_s }
-        missing = expected - live
-        extra = live - expected
+      # Typesense alters a live collection in place: PATCH /collections/:name
+      # with the fields to add. Documents already stored keep their values and
+      # gain the new fields when next indexed, which #reindex does straight
+      # after. So a field a release adds reaches an existing collection without
+      # dropping it, and a store keeps serving searches throughout.
+      #
+      # What Typesense cannot do in place is change a field's type. Never drop
+      # the collection here, which would empty a live index: name the field and
+      # the remedy instead.
+      #
+      # A failed PATCH raises, so a reindex stops rather than reporting success
+      # against a collection that still cannot serve the new filters.
+      def update_collection_schema!
+        live_fields = client.collections[collection_name].retrieve['fields']
 
-        if missing.any? || extra.any?
-          Rails.logger.warn do
-            "[spree_typesense] collection '#{collection_name}' already exists with a schema that differs from " \
-            "Schema.definition (missing: #{missing.presence || 'none'}; extra: #{extra.presence || 'none'}). " \
-            'ensure_index_settings! is a no-op against an existing collection — schema changes require ' \
-            'recreating the collection (drop + reindex).'
-          end
-        else
-          Rails.logger.warn do
-            "[spree_typesense] collection '#{collection_name}' already exists; ensure_index_settings! is a " \
-            'no-op. If Schema.definition changed, recreate the collection and reindex.'
+        missing = Schema.missing_fields(live_fields)
+        if missing.any?
+          schema_client.collections[collection_name].update(fields: missing)
+          Rails.logger.info do
+            "[spree_typesense] added #{missing.map { |f| f[:name] }.join(', ')} to collection '#{collection_name}'"
           end
         end
-      rescue StandardError => e
-        Rails.logger.warn do
-          "[spree_typesense] collection '#{collection_name}' already exists; ensure_index_settings! is a " \
-          "no-op (schema comparison failed: #{e.class}: #{e.message}). If Schema.definition changed, recreate " \
-          'the collection and reindex.'
+
+        Schema.type_mismatches(live_fields).each do |mismatch|
+          Rails.logger.warn do
+            "[spree_typesense] collection '#{collection_name}' declares '#{mismatch[:name]}' as " \
+            "#{mismatch[:live_type]}, but this release declares it #{mismatch[:type]}. Typesense cannot change " \
+            "a field's type in place: drop the collection and reindex (`rake spree:search:reindex`)."
+          end
         end
+      end
+
+      # Schema changes block writes to the collection until Typesense finishes
+      # them, and the response comes only then, so they need a far longer
+      # timeout than indexing. No retries: Typesense runs one alter at a time,
+      # and would refuse a retry while the first is still running.
+      def schema_client
+        @schema_client ||= build_client(connection_timeout_seconds: SCHEMA_CHANGE_TIMEOUT_SECONDS, num_retries: 0)
+      end
+
+      def build_client(**options)
+        uri = URI.parse(ENV.fetch('TYPESENSE_URL'))
+        ::Typesense::Client.new(
+          nodes: [{ host: uri.host, port: uri.port, protocol: uri.scheme }],
+          api_key: ENV.fetch('TYPESENSE_API_KEY'),
+          **options
+        )
       end
 
       # Mirrors meilisearch.rb#group_option_values_by_type. Hits the DB.

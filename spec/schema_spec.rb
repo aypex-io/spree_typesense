@@ -76,6 +76,66 @@ RSpec.describe Spree::SearchProvider::Typesense::Schema do
     end
   end
 
+  # A collection created by an earlier release has to gain the fields added
+  # since, in place: Typesense PATCHes new fields onto a live collection, but
+  # cannot change a field's type there. These read a live schema as Typesense
+  # returns it (string keys, extra attributes) and need no server.
+  describe 'comparing against a live collection' do
+    def live(fields) = fields.map { |f| { 'facet' => false, 'index' => true, 'optional' => true }.merge(f) }
+
+    let(:all_live_fields) do
+      live(definition[:fields].map { |f| { 'name' => f[:name], 'type' => f[:type] } })
+    end
+
+    describe '.missing_fields' do
+      it 'names nothing when the live collection already has every field' do
+        expect(described_class.missing_fields(all_live_fields)).to eq([])
+      end
+
+      # The collection a 0.1.x release created: no collection_ids.
+      it 'returns the declared definition of each field the live collection lacks' do
+        legacy = all_live_fields.reject { |f| f['name'] == 'collection_ids' }
+
+        expect(described_class.missing_fields(legacy)).to eq([field('collection_ids')])
+      end
+
+      it 'ignores fields the live collection has that the definition does not' do
+        extra = all_live_fields + live([{ 'name' => 'legacy_only', 'type' => 'string' }])
+
+        expect(described_class.missing_fields(extra)).to eq([])
+      end
+    end
+
+    describe '.type_mismatches' do
+      it 'names nothing when every shared field has the declared type' do
+        expect(described_class.type_mismatches(all_live_fields)).to eq([])
+      end
+
+      it 'names each shared field whose live type differs, with both types' do
+        drifted = all_live_fields.map { |f| f['name'] == 'units_sold_count' ? f.merge('type' => 'int64') : f }
+
+        expect(described_class.type_mismatches(drifted))
+          .to eq([{ name: 'units_sold_count', live_type: 'int64', type: 'int32' }])
+      end
+
+      it 'does not report a field the live collection lacks: that one is added, not changed' do
+        legacy = all_live_fields.reject { |f| f['name'] == 'collection_ids' }
+
+        expect(described_class.type_mismatches(legacy)).to eq([])
+      end
+    end
+
+    # Typesense checks every stored document against a field added in place,
+    # and documents indexed before the field existed do not carry it. So a
+    # field added after the first release must be optional, or the PATCH that
+    # adds it fails on every existing collection.
+    it 'declares every field added since 0.1.x as optional' do
+      %w[collection_ids].each do |name|
+        expect(field(name)[:optional]).to be(true), "#{name} must be optional to be added in place"
+      end
+    end
+  end
+
   it 'creates the collection against a real server' do
     typesense_client.collections['products_test'].delete rescue nil
     expect(typesense_client.collections.create(definition)['name']).to eq('products_test')
