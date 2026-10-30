@@ -60,6 +60,73 @@ RSpec.describe Spree::SearchProvider::Typesense, '#search_and_filter' do
     expect(result.products.map(&:prefixed_id)).to eq(%w[prod_1])
   end
 
+  # Core's storefront scope narrows to the products published on the current
+  # channel; so do the listing, its count and its pages here.
+  describe 'the current channel' do
+    let(:scope) { FakeScope.new(%w[prod_20 prod_21 prod_22 prod_23]) }
+
+    before do
+      provider.index_batch([
+        doc('prod_20', name: 'Channel Here').merge('channel_ids' => %w[3]),
+        doc('prod_21', name: 'Channel Elsewhere').merge('channel_ids' => %w[4]),
+        doc('prod_22', name: 'Channel Both').merge('channel_ids' => %w[3 4]),
+        doc('prod_23', name: 'Channel Unpublished').merge('channel_ids' => [])
+      ])
+    end
+
+    it 'returns and counts only the products published on it' do
+      allow(Spree::Current).to receive(:channel).and_return(Struct.new(:id).new(3))
+
+      result = provider.search_and_filter(scope: scope, query: 'channel')
+
+      expect(result.products.map(&:prefixed_id)).to contain_exactly('prod_20', 'prod_22')
+      expect(result.total_count).to eq(2)
+    end
+
+    it 'narrows nothing when there is no current channel' do
+      result = provider.search_and_filter(scope: scope, query: 'channel')
+
+      expect(result.total_count).to eq(4)
+    end
+  end
+
+  # Core's storefront scope keeps a product scheduled to publish later when it
+  # is on pre-order (`available(..., include_preorderable: true)`).
+  describe 'pre-orders' do
+    let(:scope) { FakeScope.new(%w[prod_10 prod_11 prod_12]) }
+
+    before do
+      provider.index_batch([
+        doc('prod_10', name: 'Launch Edition', available_on: 1.year.from_now.iso8601).merge('preorder' => true),
+        doc('prod_11', name: 'Launch Bundle', available_on: 1.year.from_now.iso8601).merge('preorder' => false),
+        doc('prod_12', name: 'Launch Classic')
+      ])
+    end
+
+    it 'returns a future-dated product that is on pre-order, and still excludes one that is not' do
+      result = provider.search_and_filter(scope: scope, query: 'launch')
+
+      expect(result.products.map(&:prefixed_id)).to contain_exactly('prod_10', 'prod_12')
+      expect(result.total_count).to eq(2)
+    end
+
+    it 'counts the pre-order in the facets too' do
+      expect(provider.filters(scope: scope, query: 'launch').total_count).to eq(2)
+    end
+
+    # Spree 5.5 builds documents with no `preorder` at all. The schema declares
+    # it optional, so filtering on it is valid and matches none of them, and
+    # the publish date alone decides, as before.
+    it 'serves documents built without a preorder field' do
+      stored = provider.client.collections[provider.collection_name].documents['prod_12_en_USD'].retrieve
+      expect(stored).not_to have_key('preorder')
+
+      result = provider.search_and_filter(scope: scope, query: 'classic')
+
+      expect(result.products.map(&:prefixed_id)).to eq(%w[prod_12])
+    end
+  end
+
   # Spree 6.0 whitelists in_collection; a collection listing must not return
   # the whole catalogue, nor count or facet it.
   context 'filtering by collection on Spree 6.x', if: SpreeTypesense.spree_6? do

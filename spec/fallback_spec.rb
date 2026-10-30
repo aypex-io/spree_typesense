@@ -153,7 +153,7 @@ RSpec.describe Spree::SearchProvider::Typesense, '#filters degradation' do
       expect(result.filters).to eq([])
       expect(result.total_count).to eq(0)
       expect(result.sort_options).to eq(
-        %w[price -price name -name -available_on available_on best_selling].map { |id| { id: id, label: nil } }
+        %w[manual price -price name -name -available_on available_on best_selling].map { |id| { id: id, label: nil } }
       )
       expect(result.default_sort).to eq('manual')
     end

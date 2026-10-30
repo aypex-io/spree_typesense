@@ -28,6 +28,13 @@ RSpec.describe Spree::SearchProvider::Typesense::QueryBuilder do
       expect(conds.join(' ')).to include('available_on_i:<=1785672000')
     end
 
+    # Core's storefront scope, `available(now, currency, include_preorderable:
+    # true)`, keeps a product scheduled to publish later when it is on
+    # pre-order, so a "coming soon" launch can be pre-ordered before its date.
+    it 'keeps future-dated products that are on pre-order' do
+      expect(conds).to include('(available_on_i:<=1785672000 || preorder:=true)')
+    end
+
     # 0 is the sentinel for "never discontinued"; a future discontinue_on
     # means the product is discontinued LATER and must still be visible now.
     # This must fail against a bare `discontinue_on:=0` filter.
@@ -54,6 +61,32 @@ RSpec.describe Spree::SearchProvider::Typesense::QueryBuilder do
         store: store, locale: 'en', currency: 'usd', now: Time.utc(2026, 1, 1)
       )
       expect(out).to include('currency:=USD')
+    end
+
+    # Documents carry the raw ids of the channels the product is published
+    # on, as strings, quoted here so a UUID's hyphens stay inside the value.
+    describe 'channel' do
+      def conditions(channel_id) = described_class.system_conditions(store: store, locale: 'en', currency: 'USD',
+                                                                     channel_id: channel_id)
+
+      it 'scopes to the channel when one is given' do
+        expect(conditions(3)).to include('channel_ids:=`3`')
+      end
+
+      it 'quotes a UUID channel id whole' do
+        expect(conditions('0b6c3c1e-8f3a-4c1e-9d2a-1f0e2d3c4b5a'))
+          .to include('channel_ids:=`0b6c3c1e-8f3a-4c1e-9d2a-1f0e2d3c4b5a`')
+      end
+
+      it 'adds no channel clause without a channel' do
+        expect(conditions(nil).grep(/channel_ids/)).to be_empty
+      end
+
+      it 'strips anything that could close the quote or add a clause' do
+        clause = conditions("3` || channel_ids:=`4").grep(/channel_ids/).sole
+
+        expect(clause).to eq('channel_ids:=`3channel_ids4`')
+      end
     end
   end
 

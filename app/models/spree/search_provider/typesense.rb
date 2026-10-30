@@ -22,7 +22,11 @@ module Spree
         end
       end
 
-      AVAILABLE_SORT_OPTIONS = %w[price -price name -name -available_on available_on best_selling].freeze
+      # 'manual' is the merchant's own order, as the Database provider offers
+      # it (Taxon/Collection::SORT_ORDERS). On Spree 6 a manually sorted
+      # category or collection listing is served by the Database provider; see
+      # #manual_sort_listing?.
+      AVAILABLE_SORT_OPTIONS = %w[manual price -price name -name -available_on available_on best_selling].freeze
 
       # Spree 5.6's Spree::Api::V3::ProductFilterSortOptionSerializer declares
       # `attributes :id, :label` and raises KeyError when :label is absent.
@@ -157,6 +161,12 @@ module Spree
       # otherwise swallow Faraday::ConnectionFailed itself (it IS-A
       # Faraday::Error) and this clause would be permanently unreachable.
       def search_and_filter(scope:, query: nil, filters: {}, sort: nil, page: 1, limit: 25)
+        if manual_sort_listing?(query: query, filters: filters, sort: sort)
+          return fallback_provider.search_and_filter(
+            scope: scope, query: query, filters: filters, sort: sort, page: page, limit: limit
+          )
+        end
+
         search_with_typesense(scope: scope, query: query, filters: filters, sort: sort, page: page, limit: limit)
       rescue Faraday::ConnectionFailed, Errno::ECONNREFUSED => e
         Rails.logger.error { "[spree_typesense] unreachable, degrading to Database provider: #{e.message}" }
@@ -169,11 +179,21 @@ module Spree
         page  = [page.to_i, 1].max
         limit = limit.to_i.clamp(1, 100)
 
-        result = execute_search(query: query, filters: filters, sort: sort, page: page, limit: limit)
+        base, grouped = build_conditions(filters)
+        result = execute_search(query: query, conditions: base + QueryBuilder.grouped_option_conditions(grouped),
+                                sort: sort, page: page, limit: limit)
         return empty_result(scope, page, limit) unless result
 
         product_ids = result['hits'].map { |h| h['document']['product_id'] }.uniq
         raw_ids = product_ids.filter_map { |pid| Spree::Product.decode_prefixed_id(pid) }
+
+        # Values of two or more option types must sit on ONE variant, as core's
+        # `Product.with_option_value_ids` decides on Spree 6. The index holds a
+        # product's values as one set, so it only pre-filters; core's scope
+        # gives the exact answer, as in Spree's Meilisearch provider. (On 5.x
+        # core asks it of the product, as the index does, so this agrees.) A
+        # page can then come back short of `limit`, and the total over-counts.
+        scope = scope.with_option_value_ids(grouped.values.flatten) if grouped.size > 1
 
         # SECURITY: intersect with the authorized scope, preserving engine order.
         products = if raw_ids.any?
@@ -189,12 +209,12 @@ module Spree
 
       def filters(scope:, query: nil, filters: {})
         result, distribution, stats = execute_faceted_search(query: query, filters: filters)
-        return empty_filters_result unless result
+        return empty_filters_result(filters) unless result
 
         FiltersResult.new(
           filters: Facets.build(distribution, currency: currency, stats: stats),
           sort_options: sort_options_payload,
-          default_sort: DEFAULT_SORT,
+          default_sort: default_sort_for(filters),
           total_count: result['found'] || 0
         )
       # `filters` has no Database-provider equivalent to degrade to (facets
@@ -206,7 +226,7 @@ module Spree
       # response into an unhandled 500 here.
       rescue Faraday::ConnectionFailed, Errno::ECONNREFUSED => e
         Rails.logger.error { "[spree_typesense] unreachable while computing filters, returning empty: #{e.message}" }
-        empty_filters_result
+        empty_filters_result(filters)
       end
 
       # Composite ids mean one product maps to N documents (locale × currency),
@@ -267,10 +287,7 @@ module Spree
         nil
       end
 
-      def execute_search(query:, filters:, sort:, page:, limit:, facet_by: nil)
-        base, grouped = build_conditions(filters)
-        conditions = base + QueryBuilder.grouped_option_conditions(grouped)
-
+      def execute_search(query:, conditions:, sort:, page:, limit:, facet_by: nil)
         client.collections[collection_name].documents.search(
           search_params(query: query, conditions: conditions, sort: sort, page: page, limit: limit, facet_by: facet_by)
         )
@@ -300,7 +317,7 @@ module Spree
         facet_by = Schema::FACET_FIELDS.join(',')
 
         if grouped.empty?
-          result = execute_search(query: query, filters: filters, sort: nil, page: 1, limit: 0, facet_by: facet_by)
+          result = execute_search(query: query, conditions: base, sort: nil, page: 1, limit: 0, facet_by: facet_by)
           return nil unless result
 
           return [result, Facets.normalize(result['facet_counts']), Facets.normalize_stats(result['facet_counts'])]
@@ -388,14 +405,57 @@ module Spree
       # disjunctive faceting has to rebuild the option half per query while the
       # base half (system scoping + user filters) stays fixed.
       def build_conditions(filters)
-        f = filters.respond_to?(:to_unsafe_h) ? filters.to_unsafe_h : (filters || {}).to_h
-        f = f.transform_keys(&:to_s)
+        f = normalize_filters(filters)
         option_ids = f.delete('with_option_value_ids')
 
-        base = QueryBuilder.system_conditions(store: store, locale: locale, currency: currency)
+        base = QueryBuilder.system_conditions(store: store, locale: locale, currency: currency,
+                                              channel_id: current_channel&.id)
         base += QueryBuilder.user_conditions(f)
 
         [base, group_option_values_by_type(Array(option_ids))]
+      end
+
+      # The channel the request is served on, read as core's storefront scope
+      # and the Meilisearch provider read it on every supported version. Nil
+      # outside a channel context, and then nothing is narrowed.
+      def current_channel
+        Spree::Current.channel
+      end
+
+      # A string-keyed copy of the filters, whichever shape they arrive in:
+      # Parameters, a symbol- or string-keyed Hash, or nil.
+      def normalize_filters(filters)
+        f = filters.respond_to?(:to_unsafe_h) ? filters.to_unsafe_h : (filters || {}).to_h
+        f.transform_keys(&:to_s)
+      end
+
+      # The sort a listing starts on, as Spree 6's FiltersAggregator and
+      # Meilisearch provider derive it: the collection's own sort order, given
+      # in the API's form ('price desc' -> '-price'), and 'manual' otherwise.
+      # Only 6.x's filters endpoint passes `_collection`.
+      def default_sort_for(filters)
+        collection = normalize_filters(filters)['_collection']
+        sort_order = collection.sort_order.presence if collection.respond_to?(:sort_order)
+        field, direction = (sort_order || DEFAULT_SORT).to_s.split(' ', 2)
+        direction == 'desc' ? "-#{field}" : field
+      end
+
+      # Whether this is a single category or collection listing in the
+      # merchant's manual order, with no text query. Spree 6's Database
+      # provider orders those by position, the sort being 'manual' or omitted
+      # there (`manual_sort_grouping`); the index carries no positions, so
+      # #search_and_filter hands them to it. A text query keeps relevance, and
+      # several categories have no single position to follow.
+      #
+      # Spree 5's Database provider applies no position order through this
+      # API, so on 5.x a listing stays on Typesense.
+      def manual_sort_listing?(query:, filters:, sort:)
+        return false unless SpreeTypesense.spree_6?
+        return false if query.present?
+        return false unless sort.blank? || sort.to_s == 'manual'
+
+        f = normalize_filters(filters)
+        QueryBuilder.valid_id?(f['in_collection']) || QueryBuilder.valid_id?(f['in_category'])
       end
 
       def search_params(query:, conditions:, sort:, page:, limit:, facet_by: nil)
@@ -506,11 +566,11 @@ module Spree
         SearchResult.new(products: scope.none, total_count: 0, pagy: build_pagy(0, page, limit))
       end
 
-      def empty_filters_result
+      def empty_filters_result(filters)
         FiltersResult.new(
           filters: [],
           sort_options: sort_options_payload,
-          default_sort: DEFAULT_SORT,
+          default_sort: default_sort_for(filters),
           total_count: 0
         )
       end
