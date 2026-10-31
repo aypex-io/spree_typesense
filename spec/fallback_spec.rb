@@ -88,13 +88,14 @@ RSpec.describe Spree::SearchProvider::Typesense, '#search_and_filter degradation
     end
   end
 
-  # Supplementary only: proves the outer rescue clause itself is wired to the
-  # right constants and delegates correctly, independent of what triggers it.
+  # Supplementary only: proves the rescue is wired to the right constants and
+  # delegates correctly, independent of what triggers it. The failure is
+  # raised by the Typesense request itself, the only thing the rescue covers.
   # Must not be the only coverage for this behaviour (see the real-failure
   # spec above).
-  describe 'when search_with_typesense raises directly (supplementary)' do
+  describe 'when the Typesense request raises directly (supplementary)' do
     it 'still delegates to Database on Faraday::ConnectionFailed' do
-      allow(provider).to receive(:search_with_typesense).and_raise(Faraday::ConnectionFailed.new('boom'))
+      allow(provider).to receive(:execute_search).and_raise(Faraday::ConnectionFailed.new('boom'))
       database_result = instance_double(Spree::SearchProvider::SearchResult)
       database_provider = instance_double(Spree::SearchProvider::Database, search_and_filter: database_result)
       allow(Spree::SearchProvider::Database).to receive(:new).and_return(database_provider)
@@ -105,7 +106,7 @@ RSpec.describe Spree::SearchProvider::Typesense, '#search_and_filter degradation
     end
 
     it 'still delegates to Database on Errno::ECONNREFUSED' do
-      allow(provider).to receive(:search_with_typesense).and_raise(Errno::ECONNREFUSED)
+      allow(provider).to receive(:execute_search).and_raise(Errno::ECONNREFUSED)
       database_result = instance_double(Spree::SearchProvider::SearchResult)
       database_provider = instance_double(Spree::SearchProvider::Database, search_and_filter: database_result)
       allow(Spree::SearchProvider::Database).to receive(:new).and_return(database_provider)
@@ -185,20 +186,27 @@ RSpec.describe Spree::SearchProvider::Typesense, 'when Typesense fails' do
     allow(logger).to receive(:error) { |msg = nil, &blk| errors_logged << (msg || blk&.call) }
     allow(Rails).to receive(:logger).and_return(logger)
     reporter = Object.new
-    allow(reporter).to receive(:report) { |error, **| reported << error }
+    allow(reporter).to receive(:report) { |error, severity: nil, **| reported << [error, severity] }
     allow(Rails).to receive(:error).and_return(reporter)
   end
 
+  # A transient failure (a timeout, a 5xx, a lost connection) is reported as a
+  # warning. One that will not pass by itself (a rejected query from schema
+  # drift, a missing collection, a bad key) is reported as an error, or a
+  # broken index could go unnoticed while the Database provider answers.
   {
-    'a read timeout' => Faraday::TimeoutError.new('timed out'),
-    "the client's own timeout error" => Typesense::Error::TimeoutError.new('timed out'),
-    'a 5xx' => Typesense::Error::ServerError.new('Internal Server Error'),
+    'a read timeout' => [Faraday::TimeoutError.new('timed out'), :warning],
+    "the client's own timeout error" => [Typesense::Error::TimeoutError.new('timed out'), :warning],
+    'a 5xx' => [Typesense::Error::ServerError.new('Internal Server Error'), :warning],
+    'a refused connection' => [Faraday::ConnectionFailed.new('Connection refused'), :warning],
+    'an unreachable host' => [Errno::EHOSTUNREACH.new, :warning],
+    'a reset connection' => [Errno::ECONNRESET.new, :warning],
     'a 400, such as a filter on a field the collection lacks' =>
-      Typesense::Error::RequestMalformed.new('Could not find a filter field named `collection_ids` in the schema.'),
-    'a missing collection' => Typesense::Error::ObjectNotFound.new('Not Found'),
-    'a refused connection' => Faraday::ConnectionFailed.new('Connection refused'),
-    'an unreachable host' => Errno::EHOSTUNREACH.new
-  }.each do |description, error|
+      [Typesense::Error::RequestMalformed.new('Could not find a filter field named `collection_ids` in the schema.'),
+       :error],
+    'a missing collection' => [Typesense::Error::ObjectNotFound.new('Not Found'), :error],
+    'a rejected API key' => [Typesense::Error::RequestUnauthorized.new('Forbidden'), :error]
+  }.each do |description, (error, severity)|
     context "on #{description}" do
       before { failing_with(error) }
 
@@ -218,11 +226,11 @@ RSpec.describe Spree::SearchProvider::Typesense, 'when Typesense fails' do
         expect(database).to have_received(:filters).with(scope: scope, query: 'tea', filters: filters)
       end
 
-      it 'logs the error and reports it as handled' do
+      it "logs the error and reports it as handled, with severity #{severity}" do
         provider.search_and_filter(scope: scope, query: 'tea')
 
         expect(errors_logged.join(' ')).to include(error.class.name, 'Database')
-        expect(reported).to eq([error])
+        expect(reported).to eq([[error, severity]])
       end
     end
   end
@@ -239,6 +247,7 @@ RSpec.describe Spree::SearchProvider::Typesense, 'when Typesense fails' do
 
     expect(provider.filters(scope: scope, filters: { 'with_option_value_ids' => %w[ov_red] })).to eq(:database_filters)
     expect(errors_logged.join(' ')).to include('Bad filter')
+    expect(reported.map(&:last)).to eq([:error])
   end
 
   # A bug is not an outage: hiding it behind the Database provider would hide
@@ -248,6 +257,42 @@ RSpec.describe Spree::SearchProvider::Typesense, 'when Typesense fails' do
 
     expect { provider.search_and_filter(scope: scope, query: 'tea') }.to raise_error(NoMethodError, 'a bug')
     expect(database).not_to have_received(:search_and_filter)
+  end
+
+  # Only the network errors the Typesense client gives up on count; any other
+  # system error is not Typesense being unavailable.
+  it 'does not swallow other system errors' do
+    failing_with(Errno::EACCES.new)
+
+    expect { provider.search_and_filter(scope: scope, query: 'tea') }.to raise_error(Errno::EACCES)
+    expect(database).not_to have_received(:search_and_filter)
+  end
+
+  # Only the Typesense request is covered. An error raised around it is not
+  # Typesense failing, even when its class could be: it must not be logged as
+  # one, nor make the Database provider run again.
+  describe 'errors raised around the Typesense request' do
+    it 'lets an error from the authorized scope propagate' do
+      allow(provider).to receive(:search_client).and_return(RecordingTypesenseClient.new do |_kind, _params|
+        { 'found' => 1, 'hits' => [{ 'document' => { 'product_id' => 'prod_1' } }] }
+      end)
+      allow(scope).to receive(:where).and_raise(Errno::ECONNRESET)
+
+      expect { provider.search_and_filter(scope: scope, query: 'tea') }.to raise_error(Errno::ECONNRESET)
+      expect(database).not_to have_received(:search_and_filter)
+      expect(errors_logged).to be_empty
+    end
+
+    context 'on Spree 6.x', if: SpreeTypesense.spree_6? do
+      it 'lets an error from the Database hand-off of a manually sorted listing propagate' do
+        allow(database).to receive(:search_and_filter).and_raise(Errno::ECONNREFUSED)
+
+        expect { provider.search_and_filter(scope: scope, filters: { 'in_category' => 'ctg_a' }) }
+          .to raise_error(Errno::ECONNREFUSED)
+        expect(database).to have_received(:search_and_filter).once
+        expect(errors_logged).to be_empty
+      end
+    end
   end
 
   # Unconfigured is unavailable too: no 500 from a KeyError on every search.
@@ -277,7 +322,7 @@ RSpec.describe Spree::SearchProvider::Typesense, 'when Typesense fails' do
 
       expect(errors_logged.size).to eq(1)
       expect(errors_logged.first).to include('TYPESENSE_URL', 'Database')
-      expect(reported.size).to eq(1)
+      expect(reported.map(&:last)).to eq([:error])
     end
 
     # Indexing runs in jobs, which should fail loudly and retry.

@@ -30,7 +30,7 @@ RSpec.describe 'Typesense engine behaviours we rely on' do
   def add(doc) = typesense_client.collections[coll].documents.create(doc)
   def search(params) = typesense_client.collections[coll].documents.search(params)
 
-  # DIVERGENCE 1 — caused every search to return zero results (Task 5).
+  # DIVERGENCE 1 — once made every search return zero results.
   # Meilisearch compares ISO8601 strings lexicographically; Typesense does not.
   # This is why the provider derives available_on_i (int64) at index time.
   describe 'range operators on string fields' do
@@ -47,7 +47,7 @@ RSpec.describe 'Typesense engine behaviours we rely on' do
     end
   end
 
-  # DIVERGENCE 2 — retroactively broke the shipped price facet (Task 6a),
+  # DIVERGENCE 2 — once broke the price facet,
   # which derived min/max from facet KEYS.
   describe 'facet value truncation' do
     before { 15.times { |i| add('id' => i.to_s, 'n' => i, 'iso' => '2020-01-01T00:00:00Z', 'epoch' => 1, 'price' => (i + 1) * 7.5) } }
@@ -98,7 +98,7 @@ RSpec.describe 'Typesense engine behaviours we rely on' do
   end
 
   # DIVERGENCE 4 — a failing sub-search does NOT raise. Missing this would have
-  # silently degraded facets to empty (Task 6b).
+  # silently degraded facets to empty during the original build.
   describe 'multi_search error reporting' do
     before { add('id' => '1', 'n' => 1, 'iso' => 'x', 'epoch' => 1, 'price' => 1.0) }
 

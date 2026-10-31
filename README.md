@@ -43,7 +43,10 @@ Typesense returns a 5xx, or it rejects the query (a missing collection, a
 filter on a field the collection lacks). On Spree 6 the `Database` provider is
 built with the same `audience:`, so a back-office search stays one. Correct
 results, more slowly, beat an empty page. Each failure is logged at error level
-and reported through `Rails.error` as handled.
+and reported through `Rails.error` as handled: as a warning when it is
+transient (a timeout, a 5xx, a lost connection), and as an error when it needs
+someone to act (a rejected query, a missing collection, a bad API key, missing
+configuration), so a broken index does not go unnoticed.
 
 An unset `TYPESENSE_URL` or `TYPESENSE_API_KEY` counts as unavailable too:
 searches answer from the `Database` provider, and the problem is logged once
@@ -77,8 +80,10 @@ on failure.
   `price_lte`, `in_stock`, `out_of_stock`, `in_category`, `in_categories`,
   `in_collection` (Spree 6) and `with_option_value_ids`. It ignores
   `price_between`, `in_taxon`, `search_by_name`, other ransack predicates such
-  as `name_cont`, and `cf_*` custom-field filters. `cf_*` sorts are neither
-  offered nor applied; such a request gets the default ranking.
+  as `name_cont`, and `cf_*` custom-field filters. It sorts by `price`,
+  `-price`, `name`, `-name`, `available_on`, `-available_on` and
+  `best_selling`; any other sort, such as `created_at` or a `cf_*` sort, gets
+  the default ranking. `cf_*` sorts are not offered.
 - **Values of two or more option types** must sit on one variant on Spree 6.
   The index pre-filters by each type, and the product scope is narrowed through
   core's `Product.with_option_value_ids`, so a page can come back shorter than
@@ -169,15 +174,17 @@ A store on Spree 5.6 can bump and reindex there, ahead of moving to Spree 6:
 the collection then already has the field.
 
 The reindex now fails, naming the documents, if Typesense rejects any of them.
+On a multi-store install, `spree:search:reindex` then stops at that store, and
+the stores after it are not reindexed: fix the rejected documents and rerun it.
 
 ### To Spree 6.0
 
 1. Upgrade Spree, run its migrations, then
    `bin/rake spree:migrate_taxons_to_categories_and_collections`.
 2. Then run `bin/rake spree:search:reindex`, straight after: documents gain
-   `collection_ids` from the migrated collections, and option names from
-   `label`. Category ids do not change. If the collection predates this
-   release, the same reindex adds the field first.
+   `collection_ids` from the migrated collections. Category ids and option
+   names do not change. If the collection predates this release, the same
+   reindex adds the field first.
 
 Until a product is reindexed its documents carry no `collection_ids`, so
 collection listings sorted by a field (price, name, ...) miss it in the

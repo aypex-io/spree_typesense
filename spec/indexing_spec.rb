@@ -52,6 +52,14 @@ RSpec.describe Spree::SearchProvider::Typesense do
         .to match_array(schema.definition(provider.collection_name)[:fields].map { |f| f[:name] })
     end
 
+    # The comparison reads types as Typesense reports them back. A collection
+    # just created from the definition must compare equal, or every reindex
+    # would warn about fields that are fine.
+    it 'finds no missing field and no type mismatch on a collection it just created' do
+      expect(schema.missing_fields(live_fields)).to eq([])
+      expect(schema.type_mismatches(live_fields)).to eq([])
+    end
+
     it 'adds the fields a collection created by an earlier release lacks, as declared' do
       create_collection_as_0_1_did
       expect(live_fields.map { |f| f['name'] }).not_to include('collection_ids')
@@ -489,6 +497,17 @@ RSpec.describe Spree::SearchProvider::Typesense, 'indexing requests' do
 
       expect { index_producing('prod_x', [doc('prod_x_en_USD')]) }.to raise_error(Faraday::ConnectionFailed)
       expect(documents).not_to have_received(:delete)
+    end
+
+    # A backtick cannot be quoted in a filter value, so the id list cannot be
+    # written safely; deleting nothing beats deleting the wrong documents.
+    it 'deletes nothing, and warns, when a produced id holds a backtick' do
+      allow(documents).to receive(:import).and_return(import_results(:ok, :ok))
+
+      index_producing('prod_x', [doc('prod_x_en_USD'), doc('prod_x_en`x_USD')])
+
+      expect(documents).not_to have_received(:delete)
+      expect(logged[:warn].join(' ')).to include('prod_x', 'backtick')
     end
 
     it 'never lets a product id add a clause to the delete filter' do

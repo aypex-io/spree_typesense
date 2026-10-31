@@ -26,12 +26,44 @@ module Spree
       # error, as multi_search does per search.
       class SearchError < ::Typesense::Error; end
 
+      # The network errors typesense-ruby 5.0's ApiCall retries on and, once
+      # its retries are spent, raises as they are.
+      NETWORK_ERRORS = [
+        Errno::EINVAL, Errno::ENETDOWN, Errno::ENETUNREACH, Errno::ENETRESET, Errno::ECONNABORTED,
+        Errno::ECONNRESET, Errno::ETIMEDOUT, Errno::ECONNREFUSED, Errno::EHOSTDOWN, Errno::EHOSTUNREACH
+      ].freeze
+
       # What the Typesense client raises when it cannot answer: its own errors
-      # (HTTP 4xx/5xx, timeouts, missing configuration, SearchError) and the
-      # network errors it gives up on after its retries. The public search
-      # entry points answer from the Database provider on any of these. The
-      # base class is ::Typesense::Error; there is no ::Typesense::Error::Error.
-      UNAVAILABLE_ERRORS = [::Typesense::Error, Faraday::Error, SystemCallError, JSON::ParserError].freeze
+      # (HTTP 4xx/5xx, timeouts, missing configuration, SearchError), Faraday's,
+      # the network errors above, and a response body that is not JSON. The
+      # public search entry points answer from the Database provider on any of
+      # these. The base class is ::Typesense::Error; there is no
+      # ::Typesense::Error::Error.
+      UNAVAILABLE_ERRORS = [::Typesense::Error, Faraday::Error, *NETWORK_ERRORS, JSON::ParserError].freeze
+
+      # The failures that pass by themselves: timeouts, 5xx, lost connections.
+      # These are reported as warnings. The rest (a rejected query from schema
+      # drift, a missing collection, a bad API key, missing configuration) will
+      # not pass without someone acting, and are reported as errors, so a broken
+      # index does not go unnoticed while the Database provider answers.
+      TRANSIENT_ERRORS = [
+        ::Typesense::Error::TimeoutError, ::Typesense::Error::ServerError, ::Typesense::Error::HTTPStatus0Error,
+        Faraday::Error, *NETWORK_ERRORS, JSON::ParserError
+      ].freeze
+
+      # Raised by #request_typesense in place of a failure in UNAVAILABLE_ERRORS,
+      # so the search entry points fall back on Typesense failures only, and
+      # never on an error raised around the request (the Database provider's,
+      # or the authorized scope's), whatever its class.
+      class Unavailable < StandardError
+        attr_reader :error
+
+        def initialize(error)
+          @error = error
+          super("#{error.class}: #{error.message}")
+        end
+      end
+      private_constant :Unavailable
 
       # Set once missing configuration has been logged; see #report_unavailable.
       UNCONFIGURED_LOGGED = Concurrent::AtomicBoolean.new(false)
@@ -172,7 +204,9 @@ module Spree
       # provider when Typesense cannot answer: unreachable, timed out, a 5xx,
       # a rejected query (a 400 from a field the collection lacks, a missing
       # collection), or not configured. Correct results, more slowly, beat
-      # an empty page. Errors that are not Typesense failing still raise.
+      # an empty page. Only the Typesense request is covered: errors raised
+      # around it, by the Database provider or the authorized scope, still
+      # raise, as do errors that are not Typesense failing.
       def search_and_filter(scope:, query: nil, filters: {}, sort: nil, page: 1, limit: 25)
         if manual_sort_listing?(query: query, filters: filters, sort: sort)
           return fallback_provider.search_and_filter(
@@ -180,22 +214,28 @@ module Spree
           )
         end
 
-        search_with_typesense(scope: scope, query: query, filters: filters, sort: sort, page: page, limit: limit)
-      rescue *UNAVAILABLE_ERRORS => e
-        report_unavailable(e, query)
-        fallback_provider.search_and_filter(
-          scope: scope, query: query, filters: filters, sort: sort, page: page, limit: limit
-        )
+        begin
+          search_with_typesense(scope: scope, query: query, filters: filters, sort: sort, page: page, limit: limit)
+        rescue Unavailable => e
+          report_unavailable(e.error, query)
+          fallback_provider.search_and_filter(
+            scope: scope, query: query, filters: filters, sort: sort, page: page, limit: limit
+          )
+        end
       end
 
-      # Raises when Typesense cannot answer; #search_and_filter falls back.
+      # Raises Unavailable when Typesense cannot answer; #search_and_filter
+      # falls back. The intersection with the authorized scope runs outside
+      # #request_typesense, so its errors are never taken for Typesense's.
       def search_with_typesense(scope:, query: nil, filters: {}, sort: nil, page: 1, limit: 25)
         page  = [page.to_i, 1].max
         limit = limit.to_i.clamp(1, 100)
 
         base, grouped = build_conditions(filters)
-        result = execute_search(query: query, conditions: base + QueryBuilder.grouped_option_conditions(grouped),
-                                sort: sort, page: page, limit: limit)
+        result = request_typesense do
+          execute_search(query: query, conditions: base + QueryBuilder.grouped_option_conditions(grouped),
+                         sort: sort, page: page, limit: limit)
+        end
 
         product_ids = result['hits'].map { |h| h['document']['product_id'] }.uniq
         raw_ids = product_ids.filter_map { |pid| Spree::Product.decode_prefixed_id(pid) }
@@ -222,8 +262,14 @@ module Spree
 
       # Facets from Typesense, or, when Typesense cannot answer, from the
       # Database provider, which computes the same ones from the database.
+      # As in #search_and_filter, only the Typesense requests are covered.
       def filters(scope:, query: nil, filters: {})
-        result, distribution, stats = execute_faceted_search(query: query, filters: filters)
+        result, distribution, stats = begin
+          execute_faceted_search(query: query, filters: filters)
+        rescue Unavailable => e
+          report_unavailable(e.error, query)
+          return fallback_provider.filters(scope: scope, query: query, filters: filters)
+        end
 
         FiltersResult.new(
           filters: Facets.build(distribution, currency: currency, stats: stats),
@@ -231,9 +277,6 @@ module Spree
           default_sort: default_sort_for(filters),
           total_count: result['found'] || 0
         )
-      rescue *UNAVAILABLE_ERRORS => e
-        report_unavailable(e, query)
-        fallback_provider.filters(scope: scope, query: query, filters: filters)
       end
 
       # Composite ids mean one product maps to N documents (locale × currency),
@@ -305,7 +348,7 @@ module Spree
         nil
       end
 
-      # Raises when Typesense cannot answer; the public entry points fall back.
+      # The Typesense request; callers wrap it in #request_typesense.
       def execute_search(query:, conditions:, sort:, page:, limit:, facet_by: nil)
         search_client.collections[collection_name].documents.search(
           search_params(query: query, conditions: conditions, sort: sort, page: page, limit: limit, facet_by: facet_by)
@@ -313,7 +356,7 @@ module Spree
       end
 
       # Faceted read path. Returns [main_result, distribution, stats], and
-      # raises when Typesense cannot answer.
+      # raises Unavailable when Typesense cannot answer.
       # `stats` always comes from the MAIN query — it covers numeric fields
       # (price), which disjunctive relaxation never touches.
       #
@@ -329,7 +372,9 @@ module Spree
         facet_by = Schema::FACET_FIELDS.join(',')
 
         if grouped.empty?
-          result = execute_search(query: query, conditions: base, sort: nil, page: 1, limit: 0, facet_by: facet_by)
+          result = request_typesense do
+            execute_search(query: query, conditions: base, sort: nil, page: 1, limit: 0, facet_by: facet_by)
+          end
           return [result, Facets.normalize(result['facet_counts']), Facets.normalize_stats(result['facet_counts'])]
         end
 
@@ -344,7 +389,7 @@ module Spree
                                     sort: nil, page: 1, limit: 0, facet_by: 'option_value_ids')
         end
 
-        results = execute_multi_search(searches)
+        results = request_typesense { execute_multi_search(searches) }
         [results.first,
          merge_disjunctive_facets(results.first, results.drop(1), option_type_ids),
          Facets.normalize_stats(results.first['facet_counts'])]
@@ -474,16 +519,27 @@ module Spree
           # stats.min/max, which are exact at any cardinality), but option and
           # category facets DO — their counts only exist as returned values, and
           # string facets get no stats block. Meilisearch's equivalent default is
-          # 100; match it. Residual risk: an option type with >100 values still
-          # loses its tail. See the Task 6b report.
+          # 100; match it. Residual risk: an option type with more than 100
+          # values still loses its tail.
           params[:max_facet_values] = MAX_FACET_VALUES
         end
         params
       end
 
+      # Runs a Typesense request, raising Unavailable in place of any failure
+      # in UNAVAILABLE_ERRORS. Wrap only the request itself: whatever the block
+      # raises in that list is taken for Typesense being unavailable.
+      def request_typesense
+        yield
+      rescue *UNAVAILABLE_ERRORS => e
+        raise Unavailable, e
+      end
+
       # Logs and reports a failure the caller is about to answer from the
-      # Database provider. Missing configuration is logged and reported once
-      # per process: it fails every search the same way until someone sets it.
+      # Database provider: as a warning when it is transient, and as an error
+      # when it needs someone to act (see TRANSIENT_ERRORS). Missing
+      # configuration is logged and reported once per process: it fails every
+      # search the same way until someone sets it.
       def report_unavailable(error, query)
         if error.is_a?(::Typesense::Error::MissingConfiguration)
           return unless UNCONFIGURED_LOGGED.make_true
@@ -493,7 +549,9 @@ module Spree
           "[spree_typesense] Typesense could not answer (#{error.class}: #{error.message}); answering from the " \
           'Database provider. If the collection is missing or out of date, run `rake spree:search:reindex`.'
         end
-        Rails.error.report(error, handled: true, context: { collection: collection_name, query: query })
+        severity = TRANSIENT_ERRORS.any? { |klass| error.is_a?(klass) } ? :warning : :error
+        Rails.error.report(error, handled: true, severity: severity,
+                                  context: { collection: collection_name, query: query })
       end
 
       # Typesense alters a live collection in place: PATCH /collections/:name
@@ -583,7 +641,6 @@ module Spree
         doc['available_on_i'] = 0
         doc
       end
-
 
       def build_pagy(count, page, limit)
         Pagy::Offset.new(count: count, page: page, limit: limit)

@@ -52,7 +52,10 @@
   an empty page or empty facets, and an unset `TYPESENSE_URL` or
   `TYPESENSE_API_KEY` raised a 500. Searches and facets now answer from the
   `Database` provider in all these cases, with the failure logged (missing
-  configuration once per process) and reported through `Rails.error`.
+  configuration once per process) and reported through `Rails.error`: as a
+  warning when transient (a timeout, a 5xx, a lost connection), and as an
+  error when it needs someone to act (a rejected query, a missing collection,
+  a bad API key, missing configuration).
 - **Searches give up sooner on a hung node.** They use their own client with
   a 2 second timeout and no retry, rather than about 10 seconds; set
   `TYPESENSE_SEARCH_TIMEOUT` to change it. Indexing keeps its 5 second timeout
@@ -68,8 +71,12 @@ See [Known limitations](README.md#known-limitations) in the README:
 - Facet counts don't apply narrowing made only to the product scope, such as
   Spree 6's buyer catalogs.
 - `price_between`, `in_taxon`, `search_by_name`, other ransack predicates and
-  `cf_*` filters are ignored, and `cf_*` sorts are neither offered nor
-  applied.
+  `cf_*` filters are ignored. Sorts other than price, name, availability date
+  and best selling (`created_at`, `cf_*`, ...) get the default ranking, and
+  `cf_*` sorts are not offered.
+- On Spree 6, filtering by values of two or more option types narrows the page
+  after Typesense has counted it, so a page can come back short and the total
+  can over-count.
 
 ### Upgrading
 
@@ -80,7 +87,8 @@ See [Known limitations](README.md#known-limitations) in the README:
    `bin/rake spree:migrate_taxons_to_categories_and_collections`, then
    `bin/rake spree:search:reindex` straight after.
 3. `rake spree:search:reindex` now fails, naming the documents, if Typesense
-   rejects any of them.
+   rejects any of them. On a multi-store install the stores after the failing
+   one are then not reindexed: fix the documents and rerun.
 
 See [Upgrading](README.md#upgrading) for the details, including what to do
 when a field's type changes.
