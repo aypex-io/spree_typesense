@@ -23,6 +23,10 @@ else
   require File.join(spree_core_root, 'app/presenters/spree/search_provider/product_presenter')
 end
 require File.join(spree_core_root, 'app/models/spree/search_provider/database')
+# The request context the provider reads the current channel from, as core's
+# storefront scope does. Its fallbacks reach for Spree::Store, which this
+# suite does not have, so every example starts with no channel (see below).
+require File.join(spree_core_root, 'app/models/spree/current')
 
 Dir[File.join(__dir__, '..', 'app/{models,presenters}/**/*.rb')].sort.each { |f| require f }
 Dir[File.join(__dir__, 'support/**/*.rb')].sort.each { |f| require f }
@@ -160,6 +164,13 @@ class FakeScope
   def none
     FakeRelation.new([])
   end
+
+  # Core's scope needs the database to say which products have one variant
+  # carrying every selected option type, so an example that reaches it must
+  # say which products survive.
+  def with_option_value_ids(*)
+    raise NotImplementedError, 'stub FakeScope#with_option_value_ids with the products that survive'
+  end
 end
 
 # The provider's error path calls `Rails.logger.warn` and `Rails.error.report`,
@@ -182,6 +193,9 @@ RSpec.configure do |config|
   config.before do
     allow(Rails).to receive(:logger).and_return(Logger.new(File::NULL))
     allow(Rails).to receive(:error).and_return(Spree::SearchProvider::NULL_ERROR_REPORTER)
+    # No channel unless an example sets one: the real fallback (the store's
+    # default channel) needs Spree::Store.
+    allow(Spree::Current).to receive(:channel).and_return(nil)
   end
 
   config.before(:suite) do
@@ -199,4 +213,13 @@ def typesense_client
     api_key: ENV.fetch('TYPESENSE_API_KEY', 'test-key'),
     connection_timeout_seconds: 5
   )
+end
+
+# Runs the block with ENV changed, restoring it afterwards. `nil` unsets.
+def with_env(vars)
+  saved = vars.keys.to_h { |key| [key, ENV.fetch(key, nil)] }
+  vars.each { |key, value| value.nil? ? ENV.delete(key) : ENV.store(key, value) }
+  yield
+ensure
+  saved&.each { |key, value| value.nil? ? ENV.delete(key) : ENV.store(key, value) }
 end

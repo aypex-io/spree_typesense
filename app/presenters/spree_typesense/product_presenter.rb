@@ -110,7 +110,7 @@ module SpreeTypesense
     # --- 5.x / 6.0 source seams -------------------------------------------
 
     # 6.0 renamed taxons to categories; `Product#taxons` still answers there,
-    # but warns. Category prefixed ids become `ctg_` with it.
+    # but warns. The prefixed ids do not change: taxons were already `ctg_`.
     def product_categories
       SpreeTypesense.spree_6? ? product.categories : product.taxons
     end

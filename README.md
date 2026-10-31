@@ -1,7 +1,7 @@
 # spree_typesense
 
 A [Typesense](https://typesense.org) search provider for [Spree Commerce](https://spreecommerce.org),
-supporting Spree 5.5 to 6.x (`spree_core >= 5.5, < 7.0`).
+supporting Spree 5.5 to 6.0 (`spree_core >= 5.5, < 6.1`).
 
 Spree 5.5 ships two search providers — `Database` and `Meilisearch` (which moved
 into the `spree_meilisearch` gem in 6.0). This gem adds a Typesense one,
@@ -27,7 +27,67 @@ Then select the provider by environment:
 Spree.search_provider = 'Spree::SearchProvider::Typesense' if ENV['TYPESENSE_URL'].present?
 ```
 
-Requires `TYPESENSE_URL` and `TYPESENSE_API_KEY`.
+Requires `TYPESENSE_URL` and `TYPESENSE_API_KEY`. `TYPESENSE_SEARCH_TIMEOUT`
+(seconds, default `2`) is optional; see
+[When Typesense is unavailable](#when-typesense-is-unavailable).
+
+Then build the index: `bin/rake spree:search:reindex`.
+
+See [CHANGELOG.md](CHANGELOG.md) for what each release changes.
+
+## When Typesense is unavailable
+
+Searches and filter facets answer from Spree's `Database` provider whenever
+Typesense cannot answer: the connection is refused, the request times out,
+Typesense returns a 5xx, or it rejects the query (a missing collection, a
+filter on a field the collection lacks). On Spree 6 the `Database` provider is
+built with the same `audience:`, so a back-office search stays one. Correct
+results, more slowly, beat an empty page. Each failure is logged at error level
+and reported through `Rails.error` as handled: as a warning when it is
+transient (a timeout, a 5xx, a lost connection), and as an error when it needs
+someone to act (a rejected query, a missing collection, a bad API key, missing
+configuration), so a broken index does not go unnoticed.
+
+An unset `TYPESENSE_URL` or `TYPESENSE_API_KEY` counts as unavailable too:
+searches answer from the `Database` provider, and the problem is logged once
+per process rather than on every search. Indexing still raises, so the jobs
+fail and retry.
+
+Searches and facets go through their own client, with a 2 second timeout and
+no retry, so a hung node costs a shopper about 2 seconds before the fallback
+answers. Set `TYPESENSE_SEARCH_TIMEOUT` (in seconds, e.g. `1.5`) to change it.
+Indexing keeps a 5 second timeout and one retry, and Spree's index jobs retry
+on failure.
+
+## Known limitations
+
+- **Manual (position) sort.** The index carries no positions. On Spree 6, a
+  single category or collection listing in manual order (`sort` omitted or
+  `manual`) with no text query is answered by the `Database` provider, which
+  orders it by position. With a text query the order is relevance. On Spree 5,
+  whose `Database` provider applies no position order through the Store API,
+  `manual` is Typesense's default ranking.
+- **A full reindex does not remove documents of deleted products.** It upserts
+  every product's documents. Spree's removal job deletes a product's documents
+  when the product is destroyed; to clear any left behind, drop the collection
+  and reindex (see [Upgrading](#upgrading)).
+- **Facets don't apply catalog narrowing.** Facet counts come from the index
+  and the filters given, not from the product `scope` the filters endpoint
+  passes, so narrowing applied only to that scope is not reflected: Spree 6's
+  buyer catalogs, and a `category_id` sent without an `in_category` filter.
+  Search results are always intersected with the scope.
+- **Some filters and sorts are ignored.** The index answers `price_gte`,
+  `price_lte`, `in_stock`, `out_of_stock`, `in_category`, `in_categories`,
+  `in_collection` (Spree 6) and `with_option_value_ids`. It ignores
+  `price_between`, `in_taxon`, `search_by_name`, other ransack predicates such
+  as `name_cont`, and `cf_*` custom-field filters. It sorts by `price`,
+  `-price`, `name`, `-name`, `available_on`, `-available_on` and
+  `best_selling`; any other sort, such as `created_at` or a `cf_*` sort, gets
+  the default ranking. `cf_*` sorts are not offered.
+- **Values of two or more option types** must sit on one variant on Spree 6.
+  The index pre-filters by each type, and the product scope is narrowed through
+  core's `Product.with_option_value_ids`, so a page can come back shorter than
+  `limit` and the total can over-count.
 
 ## Engine behaviours this gem depends on
 
@@ -69,10 +129,11 @@ emits the same fields as on 5.6:
   with `spree_meilisearch` installed alongside, each gem's presenter goes with
   its own provider. Either way the provider indexes with this gem's presenter
   (see above).
-- **`Spree::Taxon` became `Spree::Category`**, with `ctg_` prefixed ids.
-  `category_ids` and `category_names` come from `product.categories`, and the
-  category facet looks up `Spree::Category`. `Spree::Taxon` is a deprecated
-  alias on 6.0 and the gem never references it there.
+- **`Spree::Taxon` became `Spree::Category`.** `category_ids` and
+  `category_names` come from `product.categories`, and the category facet
+  looks up `Spree::Category`. `Spree::Taxon` is a deprecated alias on 6.0 and
+  the gem never references it there. The prefixed ids do not change: taxons
+  already carried `ctg_` ids on 5.5 and 5.6.
 - **Option type and value `presentation` became `label`.**
   `option_type_names` and `option_values` read `label`.
 - **Metafields became custom fields.** `cf_*` keys come from
@@ -82,7 +143,8 @@ emits the same fields as on 5.6:
 - **Products belong to collections, and `in_collection` is a whitelisted
   filter.** Documents carry `collection_ids` (6.x only), and `in_collection`
   filters on it, so a collection listing returns, counts and facets only that
-  collection. Manual (position) sort within a collection is not supported.
+  collection. A listing in manual (position) order is answered by the
+  `Database` provider; see [Known limitations](#known-limitations).
 - **Descriptions are rich-text HTML in a plain column.** `description` is
   indexed as plain text (`Spree::RichTextHelper.to_plain_text`), as
   `spree_meilisearch` 6.0 does, so tag names are not searchable.
@@ -90,23 +152,72 @@ emits the same fields as on 5.6:
   `product.variants`.
 - **Providers take an `audience:`** (`:store` by default, `nil` for the back
   office). The gem inherits `Base#initialize`, so `custom_field_schema` is
-  limited to what that audience may see. When Typesense is unreachable, the
+  limited to what that audience may see. When Typesense cannot answer, the
   Database fallback is built with the same audience, so a back-office search
   does not degrade into a storefront one.
 
-Upgrading a store from 5.x to 6.0 changes its category ids (to `ctg_`) and its
-option names (to `label`), and adds `collection_ids`, so **reindex after
-upgrading Spree** (`rake spree:search:reindex`). `ensure_index_settings!` never
-alters an existing collection, so one created before this release has no
-`collection_ids` field, and `in_collection` searches against it return nothing
-(the failure is logged): drop the collection before reindexing. Staying on 5.x
-needs no reindex. Loading and using the gem on 6.0 triggers no Spree
-deprecation warning; the suite raises on any.
+Loading and using the gem on 6.0 triggers no Spree deprecation warning; the
+suite raises on any.
+
+## Upgrading
+
+### To this release
+
+Bump the gem, then run `bin/rake spree:search:reindex`. The reindex first
+brings the existing collection up to this release's schema: it adds every
+field the collection lacks (`collection_ids`, for a collection a 0.1.x release
+created) in place, through Typesense's schema update. Nothing is dropped, and
+searches keep answering throughout; Typesense holds writes to the collection
+until the field is added.
+
+A store on Spree 5.6 can bump and reindex there, ahead of moving to Spree 6:
+the collection then already has the field.
+
+The reindex now fails, naming the documents, if Typesense rejects any of them.
+On a multi-store install, `spree:search:reindex` then stops at that store, and
+the stores after it are not reindexed: fix the rejected documents and rerun it.
+
+### To Spree 6.0
+
+1. Upgrade Spree, run its migrations, then
+   `bin/rake spree:migrate_taxons_to_categories_and_collections`.
+2. Then run `bin/rake spree:search:reindex`, straight after: documents gain
+   `collection_ids` from the migrated collections. Category ids and option
+   names do not change. If the collection predates this release, the same
+   reindex adds the field first.
+
+Until a product is reindexed its documents carry no `collection_ids`, so
+collection listings sorted by a field (price, name, ...) miss it in the
+meantime. Listings in manual order are answered by the `Database` provider and
+are unaffected.
+
+### A field whose type changed
+
+Typesense can add fields in place but cannot change a field's type. If a
+release changes one, the reindex logs a warning naming the field; drop the
+collection, `products_<store code>`, and reindex:
+
+```bash
+curl -X DELETE "$TYPESENSE_URL/collections/products_<store code>" \
+  -H "X-TYPESENSE-API-KEY: $TYPESENSE_API_KEY"
+bin/rake spree:search:reindex
+```
+
+or, from a console,
+`Spree::SearchProvider::Typesense.new(store).client.collections["products_#{store.code}"].delete`.
+
+While the collection is gone, searches answer from the `Database` provider.
+Once the reindex has recreated it, they answer from Typesense, which holds only
+the products indexed so far: search returns nothing at first, and is
+incomplete until the reindex finishes. Run it at a quiet time.
 
 ## Local development
 
-Tests run against a real Typesense server — nothing is mocked. Start one locally
-before running the suite:
+Tests run against a real Typesense server. The few that check only which
+requests the provider sends use a recording client in its place
+(`spec/support/recording_typesense_client.rb`); what Typesense does with those
+requests is pinned against the server. Start one locally before running the
+suite:
 
 ```bash
 curl -O https://dl.typesense.org/releases/30.2/typesense-server-30.2-darwin-arm64.tar.gz

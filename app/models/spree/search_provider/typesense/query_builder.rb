@@ -19,14 +19,24 @@ module Spree
         # Always applied. Mirrors meilisearch.rb#system_filter_conditions.
         # locale/currency are NOT optional — documents are composite-keyed per
         # locale x currency, so omitting them returns every market's copy.
-        def system_conditions(store:, locale:, currency:, now: Time.current)
+        #
+        # `channel_id` narrows to the products published on that channel, as
+        # core's storefront scope does (`for_channel`). Documents carry raw
+        # channel ids as strings; the value is quoted so a UUID stays whole.
+        def system_conditions(store:, locale:, currency:, channel_id: nil, now: Time.current)
           conditions = ["store_ids:=#{store.id.to_i}"]
+          conditions << "channel_ids:=`#{channel_id.to_s.gsub(/[^a-zA-Z0-9_-]/, '')}`" if channel_id.present?
           conditions << "status:=active"
           conditions << "locale:=#{locale.to_s.gsub(/[^a-zA-Z_-]/, '')}"
           conditions << "currency:=#{currency.to_s.upcase.gsub(/[^A-Z]/, '')}"
           # available_on_i, NOT available_on: Typesense silently matches zero
-          # documents for range operators on string fields.
-          conditions << "available_on_i:<=#{now.to_i}"
+          # documents for range operators on string fields. A product
+          # scheduled to publish later still shows while it is on pre-order,
+          # as core's storefront scope (`include_preorderable: true`) and
+          # Meilisearch's `OR preorder = true` keep it. 5.5 documents carry no
+          # `preorder`; the schema declares it optional, so the filter stays
+          # valid there and simply matches none of them.
+          conditions << "(available_on_i:<=#{now.to_i} || preorder:=true)"
           # 0 is the sentinel for "never discontinued"; a future timestamp
           # means discontinued LATER, so those products must still be
           # visible now. Mirrors meilisearch.rb's
