@@ -16,7 +16,7 @@ RSpec.describe Spree::SearchProvider::Typesense, 'search requests' do
   before do
     allow(provider).to receive(:locale).and_return('en')
     allow(provider).to receive(:currency).and_return('USD')
-    allow(provider).to receive(:client).and_return(client)
+    allow(provider).to receive(:search_client).and_return(client)
   end
 
   # Core's storefront scope narrows to the current channel's publications
@@ -112,7 +112,7 @@ RSpec.describe Spree::SearchProvider::Typesense, 'search requests' do
 
       it 'builds the Database provider with this provider\'s audience' do
         provider = described_class.new(store, audience: nil)
-        allow(provider).to receive(:client).and_return(client)
+        allow(provider).to receive(:search_client).and_return(client)
 
         provider.search_and_filter(scope: scope, filters: { 'in_category' => 'ctg_a' })
 
@@ -176,7 +176,7 @@ RSpec.describe Spree::SearchProvider::Typesense, 'search requests across option 
   before do
     allow(provider).to receive(:locale).and_return('en')
     allow(provider).to receive(:currency).and_return('USD')
-    allow(provider).to receive(:client).and_return(client)
+    allow(provider).to receive(:search_client).and_return(client)
   end
 
   def search(grouped)

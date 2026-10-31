@@ -42,9 +42,14 @@ RSpec.describe Spree::SearchProvider::Typesense, '#search_and_filter' do
     expect(result.products).to be_empty
   end
 
-  it 'returns an empty result when the engine errors' do
-    allow(provider).to receive(:execute_search).and_return(nil)
-    expect(provider.search_and_filter(scope: FakeScope.new([]), query: 'x').total_count).to eq(0)
+  # Correct results from the database beat an empty page; fallback_spec.rb
+  # covers each kind of failure.
+  it 'answers from the Database provider when the engine errors' do
+    allow(provider).to receive(:execute_search).and_raise(Typesense::Error::ServerError, 'Internal Server Error')
+    database = instance_double(Spree::SearchProvider::Database, search_and_filter: :database_result)
+    allow(Spree::SearchProvider::Database).to receive(:new).and_return(database)
+
+    expect(provider.search_and_filter(scope: FakeScope.new([]), query: 'x')).to eq(:database_result)
   end
 
   # Proves the available_on_i derived-field fix works end to end against a

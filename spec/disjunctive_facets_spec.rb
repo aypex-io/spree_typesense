@@ -122,19 +122,23 @@ RSpec.describe Spree::SearchProvider::Typesense, 'disjunctive faceting' do
   # THE SHARPEST ENGINE DIVERGENCE IN THIS GEM. A single search raises
   # Typesense::Error::* on a bad filter or a missing collection; multi_search
   # answers HTTP 200 and puts {error, code} in the individual sub-result. A
-  # rescue-only error path would therefore treat a failed search as "no facets"
-  # and serve wrong counts with no signal. These specs pin that.
+  # rescue-only error path would therefore serve wrong counts with no signal.
+  # A failed sub-search answers from the Database provider, as any other
+  # Typesense failure does. These specs pin that.
   context 'when a multi_search sub-result carries an error body' do
     let(:ok_sub_result) do
       { 'found' => 2, 'hits' => [],
         'facet_counts' => [{ 'field_name' => 'option_value_ids',
                              'counts' => [{ 'value' => 'ov_red', 'count' => 2 }] }] }
     end
+    let(:database) { instance_double(Spree::SearchProvider::Database, filters: :database_filters) }
+
+    before { allow(Spree::SearchProvider::Database).to receive(:new).and_return(database) }
 
     def stub_multi_search(results)
       multi = instance_double('Typesense::MultiSearch')
       allow(multi).to receive(:perform).and_return('results' => results)
-      allow(provider.client).to receive(:multi_search).and_return(multi)
+      allow(provider.search_client).to receive(:multi_search).and_return(multi)
       allow(provider).to receive(:group_option_values_by_type).and_return(1 => ['ov_red'])
     end
 
@@ -147,31 +151,22 @@ RSpec.describe Spree::SearchProvider::Typesense, 'disjunctive faceting' do
       expect(result.filters.find { |f| f[:id] == 'optt_colour' }[:options].first[:count]).to eq(2)
     end
 
-    it 'degrades to the empty-but-valid result when a LATER sub-result errors' do
+    # The whole point: a partial failure must NOT quietly fall through to the
+    # main query's counts, which are exactly the wrong ones (every unselected
+    # value reads zero) — that is the bug disjunctive faceting exists to fix.
+    it 'answers from the Database provider when a LATER sub-result errors' do
       stub_multi_search([ok_sub_result, { 'error' => 'Bad filter', 'code' => 400 }])
-      expect(result.filters).to eq([])
-      expect(result.total_count).to eq(0)
-      expect(result.default_sort).to eq('manual')
-      expect(result.sort_options).not_to be_empty
+      expect(result).to eq(:database_filters)
     end
 
-    it 'degrades the same way when the MAIN sub-result errors' do
+    it 'does the same when the MAIN sub-result errors' do
       stub_multi_search([{ 'error' => 'Collection not found', 'code' => 404 }, ok_sub_result])
-      expect(result.filters).to eq([])
-      expect(result.total_count).to eq(0)
+      expect(result).to eq(:database_filters)
     end
 
     it 'does not raise' do
       stub_multi_search([ok_sub_result, { 'error' => 'Bad filter', 'code' => 400 }])
       expect { result }.not_to raise_error
-    end
-
-    # The whole point: a partial failure must NOT quietly fall through to the
-    # main query's counts, which are exactly the wrong ones (every unselected
-    # value reads zero) — that is the bug disjunctive faceting exists to fix.
-    it 'does not silently serve the un-relaxed main-query counts' do
-      stub_multi_search([ok_sub_result, { 'error' => 'Bad filter', 'code' => 400 }])
-      expect(result.filters.find { |f| f[:id] == 'optt_colour' }).to be_nil
     end
   end
 

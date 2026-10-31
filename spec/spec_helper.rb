@@ -214,3 +214,12 @@ def typesense_client
     connection_timeout_seconds: 5
   )
 end
+
+# Runs the block with ENV changed, restoring it afterwards. `nil` unsets.
+def with_env(vars)
+  saved = vars.keys.to_h { |key| [key, ENV.fetch(key, nil)] }
+  vars.each { |key, value| value.nil? ? ENV.delete(key) : ENV.store(key, value) }
+  yield
+ensure
+  saved&.each { |key, value| value.nil? ? ENV.delete(key) : ENV.store(key, value) }
+end

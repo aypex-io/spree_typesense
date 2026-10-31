@@ -22,6 +22,20 @@ module Spree
         end
       end
 
+      # A search Typesense answered with an error body instead of an HTTP
+      # error, as multi_search does per search.
+      class SearchError < ::Typesense::Error; end
+
+      # What the Typesense client raises when it cannot answer: its own errors
+      # (HTTP 4xx/5xx, timeouts, missing configuration, SearchError) and the
+      # network errors it gives up on after its retries. The public search
+      # entry points answer from the Database provider on any of these. The
+      # base class is ::Typesense::Error; there is no ::Typesense::Error::Error.
+      UNAVAILABLE_ERRORS = [::Typesense::Error, Faraday::Error, SystemCallError, JSON::ParserError].freeze
+
+      # Set once missing configuration has been logged; see #report_unavailable.
+      UNCONFIGURED_LOGGED = Concurrent::AtomicBoolean.new(false)
+
       # 'manual' is the merchant's own order, as the Database provider offers
       # it (Taxon/Collection::SORT_ORDERS). On Spree 6 a manually sorted
       # category or collection listing is served by the Database provider; see
@@ -49,6 +63,9 @@ module Spree
 
       # See #schema_client.
       SCHEMA_CHANGE_TIMEOUT_SECONDS = 120
+
+      # See #search_client. TYPESENSE_SEARCH_TIMEOUT overrides it.
+      SEARCH_TIMEOUT_SECONDS = 2
 
       def self.indexing_required?
         true
@@ -151,15 +168,11 @@ module Spree
         remove_by_id(product.prefixed_id)
       end
 
-      # Public entry point. Delegates to the real Typesense search path and
-      # degrades to the Database provider when Typesense itself is
-      # unreachable, rather than 500ing or silently returning zero results.
-      #
-      # NOTE: execute_search/execute_multi_search re-raise connection-level
-      # failures (see below) specifically so they can reach this rescue —
-      # their own broad `rescue ::Typesense::Error, Faraday::Error` would
-      # otherwise swallow Faraday::ConnectionFailed itself (it IS-A
-      # Faraday::Error) and this clause would be permanently unreachable.
+      # Public entry point. Answers from Typesense, or from the Database
+      # provider when Typesense cannot answer: unreachable, timed out, a 5xx,
+      # a rejected query (a 400 from a field the collection lacks, a missing
+      # collection), or not configured. Correct results, more slowly, beat
+      # an empty page. Errors that are not Typesense failing still raise.
       def search_and_filter(scope:, query: nil, filters: {}, sort: nil, page: 1, limit: 25)
         if manual_sort_listing?(query: query, filters: filters, sort: sort)
           return fallback_provider.search_and_filter(
@@ -168,13 +181,14 @@ module Spree
         end
 
         search_with_typesense(scope: scope, query: query, filters: filters, sort: sort, page: page, limit: limit)
-      rescue Faraday::ConnectionFailed, Errno::ECONNREFUSED => e
-        Rails.logger.error { "[spree_typesense] unreachable, degrading to Database provider: #{e.message}" }
+      rescue *UNAVAILABLE_ERRORS => e
+        report_unavailable(e, query)
         fallback_provider.search_and_filter(
           scope: scope, query: query, filters: filters, sort: sort, page: page, limit: limit
         )
       end
 
+      # Raises when Typesense cannot answer; #search_and_filter falls back.
       def search_with_typesense(scope:, query: nil, filters: {}, sort: nil, page: 1, limit: 25)
         page  = [page.to_i, 1].max
         limit = limit.to_i.clamp(1, 100)
@@ -182,7 +196,6 @@ module Spree
         base, grouped = build_conditions(filters)
         result = execute_search(query: query, conditions: base + QueryBuilder.grouped_option_conditions(grouped),
                                 sort: sort, page: page, limit: limit)
-        return empty_result(scope, page, limit) unless result
 
         product_ids = result['hits'].map { |h| h['document']['product_id'] }.uniq
         raw_ids = product_ids.filter_map { |pid| Spree::Product.decode_prefixed_id(pid) }
@@ -207,9 +220,10 @@ module Spree
                           pagy: build_pagy(result['found'] || 0, page, limit))
       end
 
+      # Facets from Typesense, or, when Typesense cannot answer, from the
+      # Database provider, which computes the same ones from the database.
       def filters(scope:, query: nil, filters: {})
         result, distribution, stats = execute_faceted_search(query: query, filters: filters)
-        return empty_filters_result(filters) unless result
 
         FiltersResult.new(
           filters: Facets.build(distribution, currency: currency, stats: stats),
@@ -217,16 +231,9 @@ module Spree
           default_sort: default_sort_for(filters),
           total_count: result['found'] || 0
         )
-      # `filters` has no Database-provider equivalent to degrade to (facets
-      # are a Typesense-only concept here), so — unlike search_and_filter —
-      # connection failures degrade to an empty facet set rather than
-      # propagating. Needed because execute_search/execute_multi_search now
-      # deliberately re-raise these for search_and_filter's benefit; without
-      # this rescue a Typesense outage would turn a graceful empty-facets
-      # response into an unhandled 500 here.
-      rescue Faraday::ConnectionFailed, Errno::ECONNREFUSED => e
-        Rails.logger.error { "[spree_typesense] unreachable while computing filters, returning empty: #{e.message}" }
-        empty_filters_result(filters)
+      rescue *UNAVAILABLE_ERRORS => e
+        report_unavailable(e, query)
+        fallback_provider.filters(scope: scope, query: query, filters: filters)
       end
 
       # Composite ids mean one product maps to N documents (locale × currency),
@@ -239,8 +246,19 @@ module Spree
         nil
       end
 
+      # The client indexing and removal go through: background jobs, which can
+      # afford to wait, and retry once on a node that fails.
       def client
         @client ||= build_client(connection_timeout_seconds: 5)
+      end
+
+      # The client searches and facets go through. A shopper waits on these,
+      # so a hung node must not hold the request: a short timeout and no retry
+      # (the indexing client's 5s and one retry cost about 10s), after which
+      # the search is answered by the Database provider. The timeout is
+      # TYPESENSE_SEARCH_TIMEOUT seconds when that is a positive number.
+      def search_client
+        @search_client ||= build_client(connection_timeout_seconds: search_timeout_seconds, num_retries: 0)
       end
 
       def collection_name
@@ -287,21 +305,15 @@ module Spree
         nil
       end
 
+      # Raises when Typesense cannot answer; the public entry points fall back.
       def execute_search(query:, conditions:, sort:, page:, limit:, facet_by: nil)
-        client.collections[collection_name].documents.search(
+        search_client.collections[collection_name].documents.search(
           search_params(query: query, conditions: conditions, sort: sort, page: page, limit: limit, facet_by: facet_by)
         )
-      rescue Faraday::ConnectionFailed, Errno::ECONNREFUSED
-        # Let the caller's degradation wrapper handle this — see the note on
-        # +search_and_filter+. Deliberately NOT caught by the broader rescue
-        # below, since Faraday::ConnectionFailed IS-A Faraday::Error.
-        raise
-      rescue ::Typesense::Error, Faraday::Error => e
-        report_search_failure(e, query)
-        nil
       end
 
-      # Faceted read path. Returns [main_result, distribution, stats], or nil.
+      # Faceted read path. Returns [main_result, distribution, stats], and
+      # raises when Typesense cannot answer.
       # `stats` always comes from the MAIN query — it covers numeric fields
       # (price), which disjunctive relaxation never touches.
       #
@@ -318,8 +330,6 @@ module Spree
 
         if grouped.empty?
           result = execute_search(query: query, conditions: base, sort: nil, page: 1, limit: 0, facet_by: facet_by)
-          return nil unless result
-
           return [result, Facets.normalize(result['facet_counts']), Facets.normalize_stats(result['facet_counts'])]
         end
 
@@ -335,8 +345,6 @@ module Spree
         end
 
         results = execute_multi_search(searches)
-        return nil unless results
-
         [results.first,
          merge_disjunctive_facets(results.first, results.drop(1), option_type_ids),
          Facets.normalize_stats(results.first['facet_counts'])]
@@ -344,26 +352,18 @@ module Spree
 
       # Typesense answers multi_search with HTTP 200 even when an individual
       # search failed — the failure is a per-result {error:, code:} body, NOT an
-      # exception. Diverges from the single-search path, so check explicitly or
-      # a broken filter silently degrades to empty facets.
+      # exception. Diverges from the single-search path, so raise it here as
+      # one, or a broken filter would silently serve the wrong facet counts.
       def execute_multi_search(searches)
-        response = client.multi_search.perform(
+        response = search_client.multi_search.perform(
           { searches: searches.map { |s| s.merge(collection: collection_name) } }
         )
         results = response['results']
 
         failed = Array(results).find { |r| r['error'] }
-        if failed
-          Rails.logger.warn { "[spree_typesense] multi_search failed: #{failed['code']} #{failed['error']}" }
-          return nil
-        end
+        raise SearchError, "multi_search failed: #{failed['code']} #{failed['error']}" if failed
 
         results
-      rescue Faraday::ConnectionFailed, Errno::ECONNREFUSED
-        raise
-      rescue ::Typesense::Error, Faraday::Error => e
-        report_search_failure(e, nil)
-        nil
       end
 
       # Start from the main (fully filtered) distribution, then for each option
@@ -481,13 +481,18 @@ module Spree
         params
       end
 
-      # NOTE: the rescues above name +::Typesense::Error+, the gem's base class.
-      # There is no +Typesense::Error::Error+ — naming it made the rescue clause
-      # itself raise NameError, so every API failure escaped as a 500 instead of
-      # degrading. Ruby only resolves a rescue's constant when an exception is
-      # actually raised, which is why it stayed invisible.
-      def report_search_failure(error, query)
-        Rails.logger.warn { "[spree_typesense] search failed: #{error.class}: #{error.message}. Run `rake spree:search:reindex`." }
+      # Logs and reports a failure the caller is about to answer from the
+      # Database provider. Missing configuration is logged and reported once
+      # per process: it fails every search the same way until someone sets it.
+      def report_unavailable(error, query)
+        if error.is_a?(::Typesense::Error::MissingConfiguration)
+          return unless UNCONFIGURED_LOGGED.make_true
+        end
+
+        Rails.logger.error do
+          "[spree_typesense] Typesense could not answer (#{error.class}: #{error.message}); answering from the " \
+          'Database provider. If the collection is missing or out of date, run `rake spree:search:reindex`.'
+        end
         Rails.error.report(error, handled: true, context: { collection: collection_name, query: query })
       end
 
@@ -531,13 +536,30 @@ module Spree
         @schema_client ||= build_client(connection_timeout_seconds: SCHEMA_CHANGE_TIMEOUT_SECONDS, num_retries: 0)
       end
 
+      # Raises Typesense::Error::MissingConfiguration, rather than KeyError,
+      # when TYPESENSE_URL or TYPESENSE_API_KEY is unset or the URL does not
+      # parse, so a search treats it as Typesense being unavailable.
       def build_client(**options)
-        uri = URI.parse(ENV.fetch('TYPESENSE_URL'))
+        url = ENV.fetch('TYPESENSE_URL', nil).presence
+        api_key = ENV.fetch('TYPESENSE_API_KEY', nil).presence
+        unless url && api_key
+          missing = { 'TYPESENSE_URL' => url, 'TYPESENSE_API_KEY' => api_key }.select { |_, v| v.nil? }.keys
+          raise ::Typesense::Error::MissingConfiguration, "#{missing.join(' and ')} not set"
+        end
+
+        uri = URI.parse(url)
         ::Typesense::Client.new(
           nodes: [{ host: uri.host, port: uri.port, protocol: uri.scheme }],
-          api_key: ENV.fetch('TYPESENSE_API_KEY'),
+          api_key: api_key,
           **options
         )
+      rescue URI::InvalidURIError => e
+        raise ::Typesense::Error::MissingConfiguration, "TYPESENSE_URL is not a valid URL: #{e.message}"
+      end
+
+      def search_timeout_seconds
+        configured = Float(ENV.fetch('TYPESENSE_SEARCH_TIMEOUT', nil), exception: false)
+        configured&.positive? ? configured : SEARCH_TIMEOUT_SECONDS
       end
 
       # Mirrors meilisearch.rb#group_option_values_by_type. Hits the DB.
@@ -562,18 +584,6 @@ module Spree
         doc
       end
 
-      def empty_result(scope, page, limit)
-        SearchResult.new(products: scope.none, total_count: 0, pagy: build_pagy(0, page, limit))
-      end
-
-      def empty_filters_result(filters)
-        FiltersResult.new(
-          filters: [],
-          sort_options: sort_options_payload,
-          default_sort: default_sort_for(filters),
-          total_count: 0
-        )
-      end
 
       def build_pagy(count, page, limit)
         Pagy::Offset.new(count: count, page: page, limit: limit)

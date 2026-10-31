@@ -60,12 +60,14 @@ RSpec.describe Spree::SearchProvider::Typesense, '#filters' do
     )
   end
 
-  it 'returns an empty-but-valid result when the engine errors' do
-    allow(provider).to receive(:execute_search).and_return(nil)
-    r = provider.filters(scope: FakeScope.new([]))
-    expect(r.filters).to eq([])
-    expect(r.total_count).to eq(0)
-    expect(r.default_sort).to eq('manual')
+  # The Database provider computes the same facets; fallback_spec.rb covers
+  # each kind of failure.
+  it 'answers from the Database provider when the engine errors' do
+    allow(provider).to receive(:execute_search).and_raise(Typesense::Error::ServerError, 'Internal Server Error')
+    database = instance_double(Spree::SearchProvider::Database, filters: :database_filters)
+    allow(Spree::SearchProvider::Database).to receive(:new).and_return(database)
+
+    expect(provider.filters(scope: FakeScope.new([]))).to eq(:database_filters)
   end
 end
 
@@ -76,32 +78,29 @@ end
 # invisible until a real API error occurred, at which point the rescue ITSELF
 # raised NameError and the failure escaped as a storefront 500 instead of
 # degrading. These specs drive a genuine engine error (a collection that was
-# never created — precisely the "run reindex first" case the warning names)
-# rather than stubbing, because stubbing the method under test is what let this
-# hide in the first place.
+# never created — precisely the "run reindex first" case) rather than
+# stubbing, because stubbing the method under test is what let this hide in
+# the first place. A missing collection answers from the Database provider.
 RSpec.describe Spree::SearchProvider::Typesense, 'when the engine really errors' do
   let(:store)    { instance_double('Spree::Store', id: 7, code: 'nosuchcollection') }
   let(:provider) { described_class.new(store) }
+  let(:database) do
+    instance_double(Spree::SearchProvider::Database, search_and_filter: :database_search, filters: :database_filters)
+  end
 
   before do
     provider.client.collections[provider.collection_name].delete rescue nil
     allow(provider).to receive(:locale).and_return('en')
     allow(provider).to receive(:currency).and_return('USD')
+    allow(Spree::SearchProvider::Database).to receive(:new).and_return(database)
   end
 
-  it 'degrades search_and_filter to an empty result rather than raising' do
-    result = nil
-    expect { result = provider.search_and_filter(scope: FakeScope.new([])) }.not_to raise_error
-    expect(result.total_count).to eq(0)
-    expect(result.products).to be_empty
+  it 'answers search_and_filter from the Database provider rather than raising' do
+    expect(provider.search_and_filter(scope: FakeScope.new([]))).to eq(:database_search)
   end
 
-  it 'degrades filters to an empty-but-valid result rather than raising' do
-    result = nil
-    expect { result = provider.filters(scope: FakeScope.new([])) }.not_to raise_error
-    expect(result.filters).to eq([])
-    expect(result.total_count).to eq(0)
-    expect(result.default_sort).to eq('manual')
+  it 'answers filters from the Database provider rather than raising' do
+    expect(provider.filters(scope: FakeScope.new([]))).to eq(:database_filters)
   end
 end
 
