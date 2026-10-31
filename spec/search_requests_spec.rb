@@ -148,7 +148,7 @@ RSpec.describe Spree::SearchProvider::Typesense, 'search requests' do
     # so handing it a listing would only lose Typesense's ranking.
     context 'on Spree 5.x', unless: SpreeTypesense.spree_6? do
       it 'keeps a category listing on Typesense' do
-        search(filters: { 'in_category' => 'txn_a' })
+        search(filters: { 'in_category' => 'ctg_a' })
 
         expect(database).not_to have_received(:search_and_filter)
         expect(client.searches.size).to eq(1)

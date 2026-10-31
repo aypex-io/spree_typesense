@@ -1,7 +1,7 @@
 require 'spec_helper'
 
 RSpec.describe Spree::SearchProvider::Typesense, '#reindex' do
-  let(:store)    { instance_double('Spree::Store', id: 1, code: 'tkf') }
+  let(:store)    { instance_double('Spree::Store', id: 1, code: 'shop') }
   let(:provider) { described_class.new(store) }
   let(:relation) { double('ActiveRecord::Relation') }
 

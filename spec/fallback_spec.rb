@@ -1,7 +1,7 @@
 require 'spec_helper'
 
 RSpec.describe Spree::SearchProvider::Typesense, '#search_and_filter degradation' do
-  let(:store)    { instance_double('Spree::Store', id: 1, code: 'tkf') }
+  let(:store)    { instance_double('Spree::Store', id: 1, code: 'shop') }
   let(:provider) { described_class.new(store) }
 
   before do
@@ -34,12 +34,12 @@ RSpec.describe Spree::SearchProvider::Typesense, '#search_and_filter degradation
       allow(Spree::SearchProvider::Database).to receive(:new).and_return(database_provider)
 
       scope = FakeScope.new([])
-      result = provider.search_and_filter(scope: scope, query: 'tongkat', filters: { a: 1 }, sort: '-price', page: 2,
+      result = provider.search_and_filter(scope: scope, query: 'herbal', filters: { a: 1 }, sort: '-price', page: 2,
                                             limit: 10)
 
       expect(result).to eq(database_result)
       expect(database_provider).to have_received(:search_and_filter).with(
-        scope: scope, query: 'tongkat', filters: { a: 1 }, sort: '-price', page: 2, limit: 10
+        scope: scope, query: 'herbal', filters: { a: 1 }, sort: '-price', page: 2, limit: 10
       )
     end
 
@@ -118,7 +118,7 @@ RSpec.describe Spree::SearchProvider::Typesense, '#search_and_filter degradation
 end
 
 RSpec.describe Spree::SearchProvider::Typesense, '#filters degradation' do
-  let(:store)    { instance_double('Spree::Store', id: 1, code: 'tkf') }
+  let(:store)    { instance_double('Spree::Store', id: 1, code: 'shop') }
   let(:provider) { described_class.new(store) }
 
   before do
@@ -149,11 +149,11 @@ RSpec.describe Spree::SearchProvider::Typesense, '#filters degradation' do
       allow(Spree::SearchProvider::Database).to receive(:new).and_return(database_provider)
       scope = FakeScope.new([])
 
-      result = provider.filters(scope: scope, query: 'tongkat', filters: { 'in_stock' => '1' })
+      result = provider.filters(scope: scope, query: 'herbal', filters: { 'in_stock' => '1' })
 
       expect(result).to be(database_result)
       expect(database_provider).to have_received(:filters)
-        .with(scope: scope, query: 'tongkat', filters: { 'in_stock' => '1' })
+        .with(scope: scope, query: 'herbal', filters: { 'in_stock' => '1' })
     end
   end
 end

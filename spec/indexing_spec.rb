@@ -1,7 +1,7 @@
 require 'spec_helper'
 
 RSpec.describe Spree::SearchProvider::Typesense do
-  let(:store)    { instance_double('Spree::Store', id: 1, code: 'tkf') }
+  let(:store)    { instance_double('Spree::Store', id: 1, code: 'shop') }
   let(:provider) { described_class.new(store) }
 
   before do
@@ -120,7 +120,7 @@ RSpec.describe Spree::SearchProvider::Typesense do
   it 'indexes a batch and makes documents retrievable' do
     provider.index_batch([
       { 'id' => 'prod_a_en_USD', 'product_id' => 'prod_a', 'locale' => 'en',
-        'currency' => 'USD', 'status' => 'active', 'name' => 'Tongkat Ali',
+        'currency' => 'USD', 'status' => 'active', 'name' => 'Herbal Extract',
         'price' => 39.0, 'in_stock' => true, 'store_ids' => ['1'],
         'discontinue_on' => 0, 'units_sold_count' => 0,
         'created_at' => '2024-01-01T00:00:00Z' }

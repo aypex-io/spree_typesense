@@ -5,7 +5,7 @@ require 'spec_helper'
 # Otherwise selecting "Red" reports every other colour as zero and the UI can
 # never offer a second choice.
 RSpec.describe Spree::SearchProvider::Typesense, 'disjunctive faceting' do
-  let(:store)    { instance_double('Spree::Store', id: 7, code: 'tkfdisj') }
+  let(:store)    { instance_double('Spree::Store', id: 7, code: 'shopdisj') }
   let(:provider) { described_class.new(store) }
 
   # One option type (Colour), three products: two Red, one Blue.

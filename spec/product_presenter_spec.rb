@@ -8,8 +8,8 @@ RSpec.describe SpreeTypesense::ProductPresenter do
                            supported_currencies_list: [FakeCatalog::Currency.new('USD')])
   end
 
-  # Spree 6.0 renamed Taxon to Category, and its prefix to ctg_.
-  let(:category_prefix) { SpreeTypesense.spree_6? ? 'ctg' : 'txn' }
+  # Spree 6.0 renamed Taxon to Category; both carry the ctg_ prefix.
+  let(:category_prefix) { 'ctg' }
   let(:apparel) { FakeCatalog::Category.new(prefixed_id: "#{category_prefix}_apparel", names: { 'en' => 'Apparel' }) }
   let(:shirts) do
     FakeCatalog::Category.new(prefixed_id: "#{category_prefix}_shirts", names: { 'en' => 'Shirts', 'de' => 'Hemden' },
@@ -132,7 +132,7 @@ RSpec.describe SpreeTypesense::ProductPresenter do
     end
 
     it 'takes categories from taxons, with ancestors, once each' do
-      expect(document('en', 'USD')[:category_ids]).to eq(%w[txn_apparel txn_shirts txn_sale])
+      expect(document('en', 'USD')[:category_ids]).to eq(%w[ctg_apparel ctg_shirts ctg_sale])
       expect(document('de', 'EUR')[:category_names]).to eq(%w[Hemden Sale])
     end
 

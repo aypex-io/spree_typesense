@@ -1,7 +1,7 @@
 require 'spec_helper'
 
 RSpec.describe Spree::SearchProvider::Typesense, '#filters' do
-  let(:store)    { instance_double('Spree::Store', id: 7, code: 'tkf') }
+  let(:store)    { instance_double('Spree::Store', id: 7, code: 'shop') }
   let(:provider) { described_class.new(store) }
 
   def doc(pid, price:, in_stock:)
@@ -110,7 +110,7 @@ end
 # has more distinct prices than the cap. Typesense computes `stats.min`/`stats.max`
 # over the full matching set, so the range must come from stats instead.
 RSpec.describe Spree::SearchProvider::Typesense, '#filters price range beyond the facet cap' do
-  let(:store)    { instance_double('Spree::Store', id: 7, code: 'tkfcap') }
+  let(:store)    { instance_double('Spree::Store', id: 7, code: 'shopcap') }
   let(:provider) { described_class.new(store) }
 
   # 120 distinct prices, 3.5 .. 122.5 — more than the 100-value cap.

@@ -46,7 +46,7 @@ module Spree
       # `attributes :id, :label` and raises KeyError when :label is absent.
       # Spree 5.5 only read :id, so the extra key is harmless there — this one
       # shape satisfies both, and 6.0 reads the same keys, which the gemspec
-      # range (>= 5.5, < 7.0) requires.
+      # range (>= 5.5, < 6.1) requires.
       #
       # NOTE: 5.6 also appends metafield-driven sort options
       # (`metafield_schema.sort_options`), and 6.0 custom-field ones
